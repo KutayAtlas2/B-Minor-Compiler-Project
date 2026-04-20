@@ -1,0 +1,266 @@
+%{
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "ast.h" // again, how did you forget to include it TWICE... TWICE!
+
+int yylex(void);
+void yyerror(const char *s);
+struct ast_node *parser_result = NULL;
+
+%}
+
+%union {
+    char* id;
+    int num;
+    double fnum;
+    struct ast_node *node;
+}
+// LOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOONNNNNNNNNNNNNNNNNGGGGGGGGGGGGGGGGGG code line
+%type <node> expr stmt stmt_list block var_decl decl_list type func_decl param_list param_list_nonempty param expr_stmt if_stmt while_stmt return_stmt print_stmt expr_list arg_list arg_list_nonempty decl
+
+%token <id> IDENTIFIER CHARACTER_LITERAL STRING_LITERAL
+%token <num> NUMBER
+%token <fnum> FLOAT_LITERAL
+%token INTEGER FLOAT BOOLEAN CHAR STRING ARRAY VOID
+%token IF ELSE WHILE RETURN PRINT FUNCTION
+%token TRUE FALSE
+%token PLUS MINUS MUL DIV MOD EXPO ASSIGN EQ NEQ LT LE GT GE AND OR NOT
+%token COLON SEMICOLON COMMA LPAREN RPAREN LBRACE RBRACE LBRACK RBRACK
+
+
+%right ASSIGN
+%left OR
+%left AND
+%left EQ NEQ
+%left LT LE GT GE
+%left PLUS MINUS
+%left MUL DIV MOD
+%right EXPO
+%right NOT
+
+%nonassoc LOWER_THAN_ELSE
+%nonassoc ELSE
+
+%define parse.error verbose
+
+%%
+
+program:
+    decl_list { parser_result = $1; }
+    ;
+
+decl_list:
+    decl_list decl {
+        if ($1 == NULL) { $$ = $2; }
+        else {
+            struct ast_node *temp = $1;
+            while (temp->next) temp = temp->next;
+            temp->next = $2;
+            $$ = $1;
+        }
+    }
+    | /* empty */ { $$ = NULL; }
+    ;
+
+decl:
+    var_decl
+    | func_decl
+    ;
+
+
+var_decl:
+    IDENTIFIER COLON type SEMICOLON {
+        $$ = make_node(AST_VARIABLE_DECL, $3, NULL);
+        $$->name = $1;
+        }
+    | IDENTIFIER COLON type ASSIGN expr SEMICOLON {
+        $$ = make_node(AST_VARIABLE_DECL, $3, $5);
+        $$->name = $1;
+    }
+    ;
+
+type:
+    INTEGER { $$ = make_node(AST_TYPE, NULL, NULL); $$->int_value = INTEGER; }
+    | FLOAT { $$ = make_node(AST_TYPE, NULL, NULL); $$->int_value = FLOAT; }
+    | BOOLEAN { $$ = make_node(AST_TYPE, NULL, NULL); $$->int_value = BOOLEAN; }
+    | CHAR { $$ = make_node(AST_TYPE, NULL, NULL); $$->int_value = CHAR; }
+    | STRING { $$ = make_node(AST_TYPE, NULL, NULL); $$->int_value = STRING; }
+    | VOID { $$ = make_node(AST_TYPE, NULL, NULL); $$->int_value = VOID; }
+    | ARRAY LBRACK NUMBER RBRACK type { $$ = make_node(AST_TYPE, NULL, NULL); $$->int_value = INTEGER; }
+    ;
+
+
+func_decl:
+    IDENTIFIER COLON FUNCTION type LPAREN param_list RPAREN ASSIGN block {
+        $$ = make_node(AST_FUNCTION_DECL, $4, $6); // left = return type, right = params
+        $$->middle = $9;                           // middle = function body
+        $$->name = $1;                             // name = name... yeah, shocking I know
+                    }
+    | IDENTIFIER COLON FUNCTION type LPAREN param_list RPAREN SEMICOLON {
+        $$ = make_node(AST_FUNCTION_DECL, $4, $6); // prototype (no body [sad] )
+        $$->name = $1;
+    }
+    ;
+
+param_list:
+    /* empty */ { $$ = NULL; }
+    | param_list_nonempty
+    ;
+
+param_list_nonempty:
+    param { $$ = $1; }
+    | param_list_nonempty COMMA param {
+        struct ast_node *temp = $1;
+        while(temp->next) temp = temp->next;
+        temp->next = $3;
+        $$ = $1;
+    }
+    ;
+
+param:
+    IDENTIFIER COLON type {
+        $$ = make_node(AST_PARAM, $3, NULL); // param(my money)
+        $$->name = $1;
+              }
+    ;
+
+block:
+    LBRACE stmt_list RBRACE { $$ = make_node(AST_BLOCK, $2, NULL); }
+    ;
+
+stmt_list:
+    stmt_list stmt {
+          if ($1 == NULL) { $$ = $2; }
+          else {
+              struct ast_node *temp = $1;
+              while (temp->next) temp = temp->next;
+              temp->next = $2;
+              $$ = $1;
+          }
+      }
+    | /* empty */ { $$ = NULL; }
+    ;
+
+stmt:
+    var_decl
+    | expr_stmt
+    | if_stmt
+    | while_stmt
+    | return_stmt
+    | print_stmt
+    | block
+    ;
+
+expr_stmt:
+    expr SEMICOLON { $$ = make_node(AST_EXPR_STMT, $1, NULL); }
+    ;
+
+if_stmt:
+    IF LPAREN expr RPAREN stmt  %prec LOWER_THAN_ELSE {
+        $$ = make_node(AST_IF_STMT, $3, $5); 
+                } 
+    | IF LPAREN expr RPAREN stmt ELSE stmt {
+        $$ = make_node(AST_IF_STMT, $3, NULL);
+        $$->middle = $5;
+        $$->right = $7; 
+                }
+    ;
+
+while_stmt:
+    WHILE LPAREN expr RPAREN stmt {
+        $$ = make_node(AST_WHILE_STMT, $3, $5);
+                }
+    ;
+
+return_stmt:
+    RETURN expr SEMICOLON { $$ = make_node(AST_RETURN_STMT, $2, NULL); }
+    | RETURN SEMICOLON { $$ = make_node(AST_RETURN_STMT, NULL, NULL); }
+    ;
+
+print_stmt:
+    PRINT expr_list SEMICOLON { $$ = make_node(AST_PRINT_STMT, $2, NULL); }
+    ;
+
+expr_list:
+    expr { $$ = $1; }
+    | expr_list COMMA expr {
+        struct ast_node *temp = $1;
+        while(temp->next) temp = temp->next;
+        temp->next = $3;
+        $$ = $1;
+    }
+    ;
+
+expr:
+    expr PLUS expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = PLUS; }
+    | expr MINUS expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = MINUS; }
+    | expr MUL expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = MUL; }
+    | expr DIV expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = DIV; }
+    | expr MOD expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = MOD; }
+    | expr EXPO expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = EXPO; }
+    | expr EQ expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = EQ; }
+    | expr NEQ expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = NEQ; }
+    | expr LT expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = LT; }
+    | expr LE expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = LE; }
+    | expr GT expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = GT; }
+    | expr GE expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = GE; }
+    | expr AND expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = AND; }
+    | expr OR expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = OR; }
+    | NOT expr { $$ = make_node(AST_UNARY_EXPR, $2, NULL); $$->op = NOT; }
+    | LPAREN expr RPAREN {$$ = $2; }
+    | IDENTIFIER { $$ = make_node(AST_IDENTIFIER, NULL, NULL);
+                   $$-> name = $1; }
+    | IDENTIFIER ASSIGN expr { $$ = make_node(AST_ASSIGN_EXPR, NULL, $3);
+                   $$-> name = $1; }
+    | IDENTIFIER LBRACK expr RBRACK {
+        $$ = make_node(AST_ARRAY_LITERAL, NULL, $3); //treat array access like a binary op: [Identifier, Index], brilliant
+        $$->name = $1;
+       }
+    | IDENTIFIER LPAREN arg_list RPAREN {
+        $$ = make_node(AST_CALL_EXPR, $3, NULL);
+        $$->name = $1;
+         }
+    | NUMBER { $$ = make_node(AST_INTEGER_LITERAL, NULL, NULL);
+                   $$-> int_value = $1; }
+    | CHARACTER_LITERAL { $$ = make_node(AST_CHAR_LITERAL, NULL, NULL);
+                   $$-> name = $1; }
+    | STRING_LITERAL { $$ = make_node(AST_STRING_LITERAL, NULL, NULL);
+                   $$-> string_value = $1; }
+    | FLOAT_LITERAL { $$ = make_node(AST_FLOAT_LITERAL, NULL, NULL);
+                   $$-> float_value = $1; }
+    | TRUE { $$ = make_node(AST_BOOLEAN_LITERAL, NULL, NULL);
+                   $$-> int_value = 1; }
+    | FALSE { $$ = make_node(AST_BOOLEAN_LITERAL, NULL, NULL);
+                   $$-> int_value = 0; }
+    ;
+
+arg_list:
+    /* empty */ { $$ = NULL; }
+    | arg_list_nonempty { $$ = $1; }
+    ;
+
+arg_list_nonempty:
+    expr { $$ = $1; }
+    | arg_list_nonempty COMMA expr {
+        struct ast_node *temp = $1;
+        while(temp->next) temp = temp->next;
+        temp->next = $3;
+        $$ = $1;
+    }
+    ;
+
+%%
+
+void yyerror(const char *s) {
+    extern int yylineno; 
+    fprintf(stderr, "Parse error in line %d: %s\n", yylineno, s);
+}
+
+int main(void) {
+    if(yyparse() == 0) {
+        printf("Parse successful! Tree Structure:\n");
+        print_ast(parser_result, 0);
+    }
+    return 0;
+}

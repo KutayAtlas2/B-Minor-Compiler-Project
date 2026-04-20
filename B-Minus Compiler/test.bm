@@ -1,0 +1,9 @@
+/* test.bm */
+x : integer = 10;
+
+main : function void() = { //lmao bro really forgot his own syntax. like how do you forget the "="?
+    print x, 20;
+    if (x > 5) {
+        print "It works!";
+    }
+}
