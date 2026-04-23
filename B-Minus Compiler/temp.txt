@@ -1,0 +1,19 @@
+func_decl:
+    IDENTIFIER COLON FUNCTION type { 
+          if (!insertSymbol($1, AST_FUNCTION_DECL)) {
+            yyerror("Function name already exists");     // idk how to tidy this up
+        }
+          } LPAREN { enterScope(); } param_list RPAREN ASSIGN func_body {
+        $$ = make_node(AST_FUNCTION_DECL, $4, $8); // left = return type, right = params
+        $$->middle = $11;                           // middle = function body
+        $$->name = $1;                             // name = name... yeah, shocking I know
+        exitScope();
+                    }
+    | IDENTIFIER COLON FUNCTION type { 
+        if (!insertSymbol($1, AST_FUNCTION_DECL)) yyerror("Function already exists");
+         } LPAREN { enterScope(); } param_list RPAREN SEMICOLON {
+        $$ = make_node(AST_FUNCTION_DECL, $4, $8); // prototype (no body [sad] )
+        $$->name = $1;
+        exitScope();
+    }
+    ;

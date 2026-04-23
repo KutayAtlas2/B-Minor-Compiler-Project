@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "ast.h" // again, how did you forget to include it TWICE... TWICE!
+#include "symboltable.h" // didn't forget it this time tho
 
 int yylex(void);
 void yyerror(const char *s);
@@ -17,7 +18,7 @@ struct ast_node *parser_result = NULL;
     struct ast_node *node;
 }
 // LOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOONNNNNNNNNNNNNNNNNGGGGGGGGGGGGGGGGGG code line
-%type <node> expr stmt stmt_list block var_decl decl_list type func_decl param_list param_list_nonempty param expr_stmt if_stmt while_stmt return_stmt print_stmt expr_list arg_list arg_list_nonempty decl
+%type <node> expr stmt stmt_list block var_decl decl_list type func_decl param_list param_list_nonempty param expr_stmt if_stmt while_stmt return_stmt print_stmt expr_list arg_list arg_list_nonempty decl func_body func_suffix
 
 %token <id> IDENTIFIER CHARACTER_LITERAL STRING_LITERAL
 %token <num> NUMBER
@@ -71,10 +72,16 @@ decl:
 
 var_decl:
     IDENTIFIER COLON type SEMICOLON {
+        if (!insertSymbol($1, $3->int_value)) {
+            yyerror("Redeclaration of variable in same scope");
+        }
         $$ = make_node(AST_VARIABLE_DECL, $3, NULL);
         $$->name = $1;
         }
     | IDENTIFIER COLON type ASSIGN expr SEMICOLON {
+        if (!insertSymbol($1, $3->int_value)) {
+            yyerror("Redeclaration of variable in same scope");
+        }
         $$ = make_node(AST_VARIABLE_DECL, $3, $5);
         $$->name = $1;
     }
@@ -87,19 +94,32 @@ type:
     | CHAR { $$ = make_node(AST_TYPE, NULL, NULL); $$->int_value = CHAR; }
     | STRING { $$ = make_node(AST_TYPE, NULL, NULL); $$->int_value = STRING; }
     | VOID { $$ = make_node(AST_TYPE, NULL, NULL); $$->int_value = VOID; }
-    | ARRAY LBRACK NUMBER RBRACK type { $$ = make_node(AST_TYPE, NULL, NULL); $$->int_value = INTEGER; }
+    | ARRAY LBRACK NUMBER RBRACK type { $$ = make_node(AST_TYPE, NULL, NULL); $$->int_value = ARRAY; }
     ;
 
 
 func_decl:
-    IDENTIFIER COLON FUNCTION type LPAREN param_list RPAREN ASSIGN block {
-        $$ = make_node(AST_FUNCTION_DECL, $4, $6); // left = return type, right = params
-        $$->middle = $9;                           // middle = function body
-        $$->name = $1;                             // name = name... yeah, shocking I know
-                    }
-    | IDENTIFIER COLON FUNCTION type LPAREN param_list RPAREN SEMICOLON {
-        $$ = make_node(AST_FUNCTION_DECL, $4, $6); // prototype (no body [sad] )
+    IDENTIFIER COLON FUNCTION type { 
+        if (!insertSymbol($1, AST_FUNCTION_DECL)) {
+            yyerror("Function already exists");
+        }
+    } LPAREN { enterScope(); } param_list RPAREN func_suffix {
+        $$ = $10; // func_suffix returns the node
+        $$->left = $4;
+        $$->right = $8;
         $$->name = $1;
+        exitScope();
+    }
+    ;
+
+func_suffix:
+    ASSIGN func_body {
+        $$ = make_node(AST_FUNCTION_DECL, NULL, NULL);
+        $$->middle = $2;
+    }
+    | SEMICOLON {
+        $$ = make_node(AST_FUNCTION_DECL, NULL, NULL);
+        // Prototype, so middle stays NULL
     }
     ;
 
@@ -120,12 +140,21 @@ param_list_nonempty:
 
 param:
     IDENTIFIER COLON type {
+        if (!insertSymbol($1, $3->int_value)) {
+            yyerror("Parameter name already used in this scope");
+        }
         $$ = make_node(AST_PARAM, $3, NULL); // param(my money)
         $$->name = $1;
               }
     ;
 
 block:
+    LBRACE { enterScope(); } stmt_list RBRACE { 
+        exitScope();
+        $$ = make_node(AST_BLOCK, $3, NULL); }
+    ;
+
+func_body:
     LBRACE stmt_list RBRACE { $$ = make_node(AST_BLOCK, $2, NULL); }
     ;
 
@@ -209,15 +238,26 @@ expr:
     | expr OR expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = OR; }
     | NOT expr { $$ = make_node(AST_UNARY_EXPR, $2, NULL); $$->op = NOT; }
     | LPAREN expr RPAREN {$$ = $2; }
-    | IDENTIFIER { $$ = make_node(AST_IDENTIFIER, NULL, NULL);
+    | IDENTIFIER { 
+        symbol *s = lookUpSymbol($1);
+        if (!s) {
+            yyerror("Variable not declared!");
+        }
+        $$ = make_node(AST_IDENTIFIER, NULL, NULL);
                    $$-> name = $1; }
-    | IDENTIFIER ASSIGN expr { $$ = make_node(AST_ASSIGN_EXPR, NULL, $3);
+    | IDENTIFIER ASSIGN expr { 
+        if (!lookUpSymbol($1)) {
+            yyerror("Cannot assign to undeclared variable");
+        }
+        $$ = make_node(AST_ASSIGN_EXPR, NULL, $3);
                    $$-> name = $1; }
     | IDENTIFIER LBRACK expr RBRACK {
+        if (!lookUpSymbol($1)) yyerror("Undeclared array identifier");
         $$ = make_node(AST_ARRAY_LITERAL, NULL, $3); //treat array access like a binary op: [Identifier, Index], brilliant
         $$->name = $1;
        }
     | IDENTIFIER LPAREN arg_list RPAREN {
+        if (!lookUpSymbol($1)) yyerror("Call to undeclared function");
         $$ = make_node(AST_CALL_EXPR, $3, NULL);
         $$->name = $1;
          }
