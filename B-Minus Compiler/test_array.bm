@@ -1,0 +1,4 @@
+main : function void() = {
+    my_list : array[10] integer;
+    print my_list[2];
+}

@@ -1634,7 +1634,7 @@ yyreduce:
 
   case 15: /* type: ARRAY LBRACK NUMBER RBRACK type  */
 #line 97 "parser.y"
-                                      { (yyval.node) = make_node(AST_TYPE, NULL, NULL); (yyval.node)->int_value = ARRAY; }
+                                      { (yyval.node) = make_node(AST_TYPE, (yyvsp[0].node), NULL); (yyval.node)->int_value = ARRAY; (yyval.node)->num_value = (yyvsp[-2].num); }
 #line 1639 "parser.tab.c"
     break;
 

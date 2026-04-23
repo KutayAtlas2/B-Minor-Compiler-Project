@@ -17,6 +17,8 @@ void print_ast(struct ast_node *n, int level) {
     printf("Node: %d", n->kind);
     if (n->name) printf(" (Name: %s)", n->name);
     if (n->kind == AST_INTEGER_LITERAL) printf(" (Val: %d)", n->int_value);
+    if (n->kind == AST_FLOAT_LITERAL) printf(" (Val: %f)", n->float_value);
+    if (n->kind == AST_TYPE && n->num_value > 0) printf("[Size: %d]", n->num_value);
     printf("\n");
 
     print_ast(n->left, level + 1);

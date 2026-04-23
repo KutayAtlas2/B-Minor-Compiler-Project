@@ -94,7 +94,7 @@ type:
     | CHAR { $$ = make_node(AST_TYPE, NULL, NULL); $$->int_value = CHAR; }
     | STRING { $$ = make_node(AST_TYPE, NULL, NULL); $$->int_value = STRING; }
     | VOID { $$ = make_node(AST_TYPE, NULL, NULL); $$->int_value = VOID; }
-    | ARRAY LBRACK NUMBER RBRACK type { $$ = make_node(AST_TYPE, NULL, NULL); $$->int_value = ARRAY; }
+    | ARRAY LBRACK NUMBER RBRACK type { $$ = make_node(AST_TYPE, $5, NULL); $$->int_value = ARRAY; $$->num_value = $3; }
     ;
 
 

@@ -47,6 +47,7 @@ struct ast_node {
     // the datatatata
     char *name;              // for AST_IDENTIFIER || AST_VARIABLE_DECL
     int int_value;           // for AST_INTEGER_LITERAL || AST_BOOLEAN_LITERAL
+    int num_value;
     double float_value;      // for AST_FLOAT_LITERAL
     char *string_value;      // for AST_STRING_LITERAL || AST_CHAR_LITERAL
 
