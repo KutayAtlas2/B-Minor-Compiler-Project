@@ -11,12 +11,11 @@ void enterScope() {
 }
 
 void exitScope() {
-    // Exterminate, kill, eradicate, obliterate the symbols that belong to the scope we are leaving.
-    while (head != NULL && head->scope == current_scope) {
-        symbol *temp = head;
-        head = head->next;
-        free(temp->name);
-        free(temp);
+    symbol *s = head;
+
+    while (s != NULL && s->scope == current_scope) {
+        s->retired = 1;
+        s = s->next;
     }
     current_scope--;
 }
@@ -45,8 +44,19 @@ int insertSymbol(char *name, int type) {
 symbol* lookUpSymbol(char *name) {
     symbol *current = head;
     while (current != NULL) {
-        if (strcmp(current->name, name) == 0) return current;
+        if (strcmp(current->name, name) == 0 && !current->retired) return current;
         current = current->next;
     }
-    return NULL; // lma bozos passport failed in ALL the accessible scopes
+    return NULL; // lmao bozos passport failed in ALL the accessible scopes
+}
+
+symbol* lookUpRetiredSymbol(char *name) {
+    symbol *current = head;
+    while (current != NULL) {
+        if (strcmp(current->name, name) == 0) {
+            return current;
+        }
+        current = current->next;
+    }
+    return NULL;
 }

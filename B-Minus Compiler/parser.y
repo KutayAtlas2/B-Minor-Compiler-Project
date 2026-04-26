@@ -8,6 +8,7 @@
 int yylex(void);
 void yyerror(const char *s);
 struct ast_node *parser_result = NULL;
+int errors = 0;
 
 %}
 
@@ -294,13 +295,20 @@ arg_list_nonempty:
 
 void yyerror(const char *s) {
     extern int yylineno; 
+    errors++;
     fprintf(stderr, "Parse error in line %d: %s\n", yylineno, s);
 }
 
 int main(void) {
-    if(yyparse() == 0) {
-        printf("Parse successful! Tree Structure:\n");
+    if(yyparse() == 0 && errors == 0) {
+        printf("Parse successful! Starting Semantic Analysis:\n");
+        semanticAnalysis(parser_result);
+        printf("Semantics successful, Tree:\n");
         print_ast(parser_result, 0);
+    }
+    else{
+        printf("Compilation failed with %d errors.\n", errors);
+        return 1;
     }
     return 0;
 }

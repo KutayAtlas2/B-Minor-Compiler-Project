@@ -1,6 +1,6 @@
 bison -d parser.y
 flex lexical.l
-gcc parser.tab.c lex.yy.c ast.c symboltable.c -o compiler
+gcc parser.tab.c lex.yy.c ast.c symboltable.c semanticAnalysis.c -o compiler
 
 
 DO THIS EVERY TIME YOU CHANGE SOMETHING YOU JUST SPENT 2 HOURS TRYING TO FIX NONEXISTENT ERRORS

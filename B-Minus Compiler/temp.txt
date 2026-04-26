@@ -1,19 +1,543 @@
+#include "ast.h"
+#include <stdlib.h>
+#include "symboltable.h"
+#include <stdio.h>
+#include "parser.tab.h"
+
+int semanticAnalysis(struct ast_node *n) {
+    if(!n) {return AST_VOID_LITERAL;}
+
+    int left_type = semanticAnalysis(n->left);
+    int right_type = semanticAnalysis(n->right);
+
+    switch (n->kind) {
+        case AST_IDENTIFIER: {
+    
+    symbol *s = lookUpRetiredSymbol(n->name); 
+    
+                if (!s) {
+                    fprintf(stderr, "Error: Variable '%s' not found in history\n", n->name);
+                    exit(1);
+             }
+               // for debug, dont forget to delete it later, future me.
+                printf("SEMANTIC DEBUG: Found '%s' in history (Scope: %d, Retired: %s)\n", 
+            s->name, s->scope, s->retired ? "Yes" : "No");
+
+                n->symbol = s;
+                n->type = s->type;
+                return n->type;
+            } 
+
+        case AST_ARRAY_LITERAL: { // The "Access" rule
+            symbol *s = lookUpRetiredSymbol(n->name);
+            if (!s) {
+                fprintf(stderr, "Error: Array '%s' undeclared\n", n->name);
+                exit(1);
+            }
+            if (s->type != ARRAY) {
+                fprintf(stderr, "Error: '%s' is not an array\n", n->name);
+                exit(1);
+            }
+            // Checks if index is an integer
+            if (right_type != INTEGER) {
+                fprintf(stderr, "Error: Array index for '%s' must be an integer\n", n->name);
+                exit(1);
+            }
+            n->type = INTEGER; // Result of access is the base type
+            return n->type;
+        }
+
+        case AST_BINARY_EXPR: {
+            if (left_type != right_type) {
+                fprintf(stderr, "Type Mismatch: Cannot operate on %d and %d\n", left_type, right_type);
+                exit(1);
+            }
+            n->type = left_type;
+            return n->type;
+        }
+        case AST_BLOCK:
+        case AST_IF_STMT: 
+             semanticAnalysis(n->left);
+             semanticAnalysis(n->middle);
+             semanticAnalysis(n->right);
+             break;
+        case AST_RETURN_STMT:
+        case AST_PRINT_STMT:
+        case AST_EXPR_STMT:
+             semanticAnalysis(n->left);
+             semanticAnalysis(n->middle);
+             semanticAnalysis(n->right);
+             break;
+        case AST_WHILE_STMT:
+             semanticAnalysis(n->left);
+             semanticAnalysis(n->middle);
+             semanticAnalysis(n->right);
+             break;
+        case AST_VARIABLE_DECL:
+            // Check the assignment expression if it exists
+             if (n->right) {
+             int expr_type = semanticAnalysis(n->right);
+           // hope i dont forget to add this: if (expr_type != n->left->int_value) error!
+                 }
+             break;
+        case AST_ASSIGN_EXPR: {
+               symbol *s = lookUpRetiredSymbol(n->name);
+                if (!s) {
+              fprintf(stderr, "Error: Assignment to undeclared variable '%s'\n", n->name);
+               exit(1);
+                   }
+               int expr_type = semanticAnalysis(n->right);
+                // Verify s->type == expr_type
+                n->type = expr_type;
+             break;
+}
+
+        default:
+            break;
+    }
+
+  int current_type = n->type;
+
+    // this to process the next one
+    if (n->next) {
+        semanticAnalysis(n->next);
+    }
+
+    return current_type; 
+}
+ and %{
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "ast.h" // again, how did you forget to include it TWICE... TWICE!
+#include "symboltable.h" // didn't forget it this time tho
+
+int yylex(void);
+void yyerror(const char *s);
+struct ast_node *parser_result = NULL;
+int errors = 0;
+
+%}
+
+%union {
+    char* id;
+    int num;
+    double fnum;
+    struct ast_node *node;
+}
+// LOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOONNNNNNNNNNNNNNNNNGGGGGGGGGGGGGGGGGG code line
+%type <node> expr stmt stmt_list block var_decl decl_list type func_decl param_list param_list_nonempty param expr_stmt if_stmt while_stmt return_stmt print_stmt expr_list arg_list arg_list_nonempty decl func_body func_suffix
+
+%token <id> IDENTIFIER CHARACTER_LITERAL STRING_LITERAL
+%token <num> NUMBER
+%token <fnum> FLOAT_LITERAL
+%token INTEGER FLOAT BOOLEAN CHAR STRING ARRAY VOID
+%token IF ELSE WHILE RETURN PRINT FUNCTION
+%token TRUE FALSE
+%token PLUS MINUS MUL DIV MOD EXPO ASSIGN EQ NEQ LT LE GT GE AND OR NOT
+%token COLON SEMICOLON COMMA LPAREN RPAREN LBRACE RBRACE LBRACK RBRACK
+
+
+%right ASSIGN
+%left OR
+%left AND
+%left EQ NEQ
+%left LT LE GT GE
+%left PLUS MINUS
+%left MUL DIV MOD
+%right EXPO
+%right NOT
+
+%nonassoc LOWER_THAN_ELSE
+%nonassoc ELSE
+
+%define parse.error verbose
+
+%%
+
+program:
+    decl_list { parser_result = $1; }
+    ;
+
+decl_list:
+    decl_list decl {
+        if ($1 == NULL) { $$ = $2; }
+        else {
+            struct ast_node *temp = $1;
+            while (temp->next) temp = temp->next;
+            temp->next = $2;
+            $$ = $1;
+        }
+    }
+    | /* empty */ { $$ = NULL; }
+    ;
+
+decl:
+    var_decl
+    | func_decl
+    ;
+
+
+var_decl:
+    IDENTIFIER COLON type SEMICOLON {
+        if (!insertSymbol($1, $3->int_value)) {
+            yyerror("Redeclaration of variable in same scope");
+        }
+        $$ = make_node(AST_VARIABLE_DECL, $3, NULL);
+        $$->name = $1;
+        }
+    | IDENTIFIER COLON type ASSIGN expr SEMICOLON {
+        if (!insertSymbol($1, $3->int_value)) {
+            yyerror("Redeclaration of variable in same scope");
+        }
+        $$ = make_node(AST_VARIABLE_DECL, $3, $5);
+        $$->name = $1;
+    }
+    ;
+
+type:
+    INTEGER { $$ = make_node(AST_TYPE, NULL, NULL); $$->int_value = INTEGER; }
+    | FLOAT { $$ = make_node(AST_TYPE, NULL, NULL); $$->int_value = FLOAT; }
+    | BOOLEAN { $$ = make_node(AST_TYPE, NULL, NULL); $$->int_value = BOOLEAN; }
+    | CHAR { $$ = make_node(AST_TYPE, NULL, NULL); $$->int_value = CHAR; }
+    | STRING { $$ = make_node(AST_TYPE, NULL, NULL); $$->int_value = STRING; }
+    | VOID { $$ = make_node(AST_TYPE, NULL, NULL); $$->int_value = VOID; }
+    | ARRAY LBRACK NUMBER RBRACK type { $$ = make_node(AST_TYPE, $5, NULL); $$->int_value = ARRAY; $$->num_value = $3; }
+    ;
+
+
 func_decl:
     IDENTIFIER COLON FUNCTION type { 
-          if (!insertSymbol($1, AST_FUNCTION_DECL)) {
-            yyerror("Function name already exists");     // idk how to tidy this up
+        if (!insertSymbol($1, AST_FUNCTION_DECL)) {
+            yyerror("Function already exists");
         }
-          } LPAREN { enterScope(); } param_list RPAREN ASSIGN func_body {
-        $$ = make_node(AST_FUNCTION_DECL, $4, $8); // left = return type, right = params
-        $$->middle = $11;                           // middle = function body
-        $$->name = $1;                             // name = name... yeah, shocking I know
-        exitScope();
-                    }
-    | IDENTIFIER COLON FUNCTION type { 
-        if (!insertSymbol($1, AST_FUNCTION_DECL)) yyerror("Function already exists");
-         } LPAREN { enterScope(); } param_list RPAREN SEMICOLON {
-        $$ = make_node(AST_FUNCTION_DECL, $4, $8); // prototype (no body [sad] )
+    } LPAREN { enterScope(); } param_list RPAREN func_suffix {
+        $$ = $10; // func_suffix returns the node
+        $$->left = $4;
+        $$->right = $8;
         $$->name = $1;
         exitScope();
     }
     ;
+
+func_suffix:
+    ASSIGN func_body {
+        $$ = make_node(AST_FUNCTION_DECL, NULL, NULL);
+        $$->middle = $2;
+    }
+    | SEMICOLON {
+        $$ = make_node(AST_FUNCTION_DECL, NULL, NULL);
+        // Prototype, so middle stays NULL
+    }
+    ;
+
+param_list:
+    /* empty */ { $$ = NULL; }
+    | param_list_nonempty
+    ;
+
+param_list_nonempty:
+    param { $$ = $1; }
+    | param_list_nonempty COMMA param {
+        struct ast_node *temp = $1;
+        while(temp->next) temp = temp->next;
+        temp->next = $3;
+        $$ = $1;
+    }
+    ;
+
+param:
+    IDENTIFIER COLON type {
+        if (!insertSymbol($1, $3->int_value)) {
+            yyerror("Parameter name already used in this scope");
+        }
+        $$ = make_node(AST_PARAM, $3, NULL); // param(my money)
+        $$->name = $1;
+              }
+    ;
+
+block:
+    LBRACE { enterScope(); } stmt_list RBRACE { 
+        exitScope();
+        $$ = make_node(AST_BLOCK, $3, NULL); }
+    ;
+
+func_body:
+    LBRACE stmt_list RBRACE { $$ = make_node(AST_BLOCK, $2, NULL); }
+    ;
+
+stmt_list:
+    stmt_list stmt {
+          if ($1 == NULL) { $$ = $2; }
+          else {
+              struct ast_node *temp = $1;
+              while (temp->next) temp = temp->next;
+              temp->next = $2;
+              $$ = $1;
+          }
+      }
+    | /* empty */ { $$ = NULL; }
+    ;
+
+stmt:
+    var_decl
+    | expr_stmt
+    | if_stmt
+    | while_stmt
+    | return_stmt
+    | print_stmt
+    | block
+    ;
+
+expr_stmt:
+    expr SEMICOLON { $$ = make_node(AST_EXPR_STMT, $1, NULL); }
+    ;
+
+if_stmt:
+    IF LPAREN expr RPAREN stmt  %prec LOWER_THAN_ELSE {
+        $$ = make_node(AST_IF_STMT, $3, $5); 
+                } 
+    | IF LPAREN expr RPAREN stmt ELSE stmt {
+        $$ = make_node(AST_IF_STMT, $3, NULL);
+        $$->middle = $5;
+        $$->right = $7; 
+                }
+    ;
+
+while_stmt:
+    WHILE LPAREN expr RPAREN stmt {
+        $$ = make_node(AST_WHILE_STMT, $3, $5);
+                }
+    ;
+
+return_stmt:
+    RETURN expr SEMICOLON { $$ = make_node(AST_RETURN_STMT, $2, NULL); }
+    | RETURN SEMICOLON { $$ = make_node(AST_RETURN_STMT, NULL, NULL); }
+    ;
+
+print_stmt:
+    PRINT expr_list SEMICOLON { $$ = make_node(AST_PRINT_STMT, $2, NULL); }
+    ;
+
+expr_list:
+    expr { $$ = $1; }
+    | expr_list COMMA expr {
+        struct ast_node *temp = $1;
+        while(temp->next) temp = temp->next;
+        temp->next = $3;
+        $$ = $1;
+    }
+    ;
+
+expr:
+    expr PLUS expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = PLUS; }
+    | expr MINUS expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = MINUS; }
+    | expr MUL expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = MUL; }
+    | expr DIV expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = DIV; }
+    | expr MOD expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = MOD; }
+    | expr EXPO expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = EXPO; }
+    | expr EQ expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = EQ; }
+    | expr NEQ expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = NEQ; }
+    | expr LT expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = LT; }
+    | expr LE expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = LE; }
+    | expr GT expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = GT; }
+    | expr GE expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = GE; }
+    | expr AND expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = AND; }
+    | expr OR expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = OR; }
+    | NOT expr { $$ = make_node(AST_UNARY_EXPR, $2, NULL); $$->op = NOT; }
+    | LPAREN expr RPAREN {$$ = $2; }
+    | IDENTIFIER { 
+        symbol *s = lookUpSymbol($1);
+        if (!s) {
+            yyerror("Variable not declared!");
+        }
+        $$ = make_node(AST_IDENTIFIER, NULL, NULL);
+                   $$-> name = $1; }
+    | IDENTIFIER ASSIGN expr { 
+        if (!lookUpSymbol($1)) {
+            yyerror("Cannot assign to undeclared variable");
+        }
+        $$ = make_node(AST_ASSIGN_EXPR, NULL, $3);
+                   $$-> name = $1; }
+    | IDENTIFIER LBRACK expr RBRACK {
+        if (!lookUpSymbol($1)) yyerror("Undeclared array identifier");
+        $$ = make_node(AST_ARRAY_LITERAL, NULL, $3); //treat array access like a binary op: [Identifier, Index], brilliant
+        $$->name = $1;
+       }
+    | IDENTIFIER LPAREN arg_list RPAREN {
+        if (!lookUpSymbol($1)) yyerror("Call to undeclared function");
+        $$ = make_node(AST_CALL_EXPR, $3, NULL);
+        $$->name = $1;
+         }
+    | NUMBER { $$ = make_node(AST_INTEGER_LITERAL, NULL, NULL);
+                   $$-> int_value = $1; }
+    | CHARACTER_LITERAL { $$ = make_node(AST_CHAR_LITERAL, NULL, NULL);
+                   $$-> name = $1; }
+    | STRING_LITERAL { $$ = make_node(AST_STRING_LITERAL, NULL, NULL);
+                   $$-> string_value = $1; }
+    | FLOAT_LITERAL { $$ = make_node(AST_FLOAT_LITERAL, NULL, NULL);
+                   $$-> float_value = $1; }
+    | TRUE { $$ = make_node(AST_BOOLEAN_LITERAL, NULL, NULL);
+                   $$-> int_value = 1; }
+    | FALSE { $$ = make_node(AST_BOOLEAN_LITERAL, NULL, NULL);
+                   $$-> int_value = 0; }
+    ;
+
+arg_list:
+    /* empty */ { $$ = NULL; }
+    | arg_list_nonempty { $$ = $1; }
+    ;
+
+arg_list_nonempty:
+    expr { $$ = $1; }
+    | arg_list_nonempty COMMA expr {
+        struct ast_node *temp = $1;
+        while(temp->next) temp = temp->next;
+        temp->next = $3;
+        $$ = $1;
+    }
+    ;
+
+%%
+
+void yyerror(const char *s) {
+    extern int yylineno; 
+    errors++;
+    fprintf(stderr, "Parse error in line %d: %s\n", yylineno, s);
+}
+
+int main(void) {
+    if(yyparse() == 0 && errors == 0) {
+        printf("Parse successful! Starting Semantic Analysis:\n");
+        semanticAnalysis(parser_result);
+        printf("Semantics successful, Tree:\n");
+        print_ast(parser_result, 0);
+    }
+    else{
+        printf("Compilation failed with %d errors.\n", errors);
+        return 1;
+    }
+    return 0;
+}
+ and #include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include "symboltable.h" // wow congrats to me. I didnt forget add it this time and not deal with nonexistent errors for 30 minutes.
+
+symbol *head = NULL;
+int current_scope = 0; // 0 = Global, 1+ = Local
+
+void enterScope() {
+    current_scope++;
+}
+
+void exitScope() {
+    symbol *s = head;
+
+    while (s != NULL && s->scope == current_scope) {
+        s->retired = 1;
+        s = s->next;
+    }
+    current_scope--;
+}
+
+int insertSymbol(char *name, int type) {
+    // Check if it exists IN THE CURRENT SCOPE only. Shadowing is allowed for outer scopes.
+    symbol *s = head;
+
+    printf("DEBUG: Inserting '%s' | Current Scope: %d | Head Scope: %s\n", 
+        name, current_scope, (head ? "Exists" : "NULL"));
+
+    while (s != NULL) {
+        if (s-> scope == current_scope && strcmp(s->name, name) == 0) return 0; // Error: Redeclared in same scope.
+        s = s->next;
+    }
+
+    symbol *new_sym = malloc(sizeof(symbol));
+    new_sym->name = strdup(name);
+    new_sym->type = type;
+    new_sym->scope = current_scope;
+    new_sym->next = head;
+    head = new_sym;
+    return 1;
+}
+
+symbol* lookUpSymbol(char *name) {
+    symbol *current = head;
+    while (current != NULL) {
+        if (strcmp(current->name, name) == 0 && !current->retired) return current;
+        current = current->next;
+    }
+    return NULL; // lmao bozos passport failed in ALL the accessible scopes
+}
+
+symbol* lookUpRetiredSymbol(char *name) {
+    symbol *current = head;
+    while (current != NULL) {
+        if (strcmp(current->name, name) == 0) {
+            return current;
+        }
+        current = current->next;
+    }
+    return NULL;
+} and typedef enum{
+
+    // declerathingys
+    AST_VARIABLE_DECL,
+    AST_FUNCTION_DECL,
+    AST_PARAM,
+    AST_TYPE, // not my type tho
+
+    // statematamastuff
+    AST_IF_STMT,
+    AST_WHILE_STMT,
+    AST_RETURN_STMT,
+    AST_PRINT_STMT,
+    AST_EXPR_STMT,
+    AST_BLOCK, // the {"long ahh code"} thingy (important ig?)
+
+    //uhh expressions... yea
+    AST_BINARY_EXPR, // +, -, *, /, ^, %
+    AST_UNARY_EXPR, 
+    AST_ASSIGN_EXPR,
+    AST_CALL_EXPR,// dial the functions phone number [f(x) type stuff]
+    AST_ARG_LIST,
+
+    // literally
+    AST_IDENTIFIER, // INDENTIFIER? really, that would have cost at least 3 hours and 5 rage quits
+    AST_INTEGER_LITERAL, // lmao how did u forget this???
+    AST_STRING_LITERAL,
+    AST_FLOAT_LITERAL,
+    AST_CHAR_LITERAL,
+    AST_BOOLEAN_LITERAL,
+    AST_ARRAY_LITERAL,
+    AST_VOID_LITERAL, 
+
+
+} ast_kind;
+
+struct ast_node {
+    ast_kind kind; // so kind
+    int op;  //as in operator
+
+    
+    struct ast_node *left;  
+    struct ast_node *right;  
+    struct ast_node *middle; // for "else" structure
+    struct ast_node *next;   // goes to da next statetamathingymabob
+
+    // the datatatata
+    char *name;              // for AST_IDENTIFIER || AST_VARIABLE_DECL
+    int int_value;           // for AST_INTEGER_LITERAL || AST_BOOLEAN_LITERAL
+    int num_value;
+    double float_value;      // for AST_FLOAT_LITERAL
+    char *string_value;      // for AST_STRING_LITERAL || AST_CHAR_LITERAL
+
+    //Semantic Info (secret item for later)
+    int type;                // The evaluated type (is this whole expr an integer?)
+    struct symbol *symbol;   // Pointer to the Symbol Table entry (where it lives in the *fast express highway(RAM)*)
+};
+
+struct ast_node* make_node(ast_kind kind, struct ast_node* left, struct ast_node* right);
+void print_ast(struct ast_node* node, int level);
+int semanticAnalysis(struct ast_node *n);

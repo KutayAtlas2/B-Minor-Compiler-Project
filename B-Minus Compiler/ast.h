@@ -58,3 +58,4 @@ struct ast_node {
 
 struct ast_node* make_node(ast_kind kind, struct ast_node* left, struct ast_node* right);
 void print_ast(struct ast_node* node, int level);
+int semanticAnalysis(struct ast_node *n);
