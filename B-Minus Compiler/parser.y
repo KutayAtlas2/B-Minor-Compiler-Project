@@ -4,10 +4,11 @@
 #include <string.h>
 #include "ast.h" // again, how did you forget to include it TWICE... TWICE!
 #include "symboltable.h" // didn't forget it this time tho
+#include "codegen.h"
 
 int yylex(void);
 void yyerror(const char *s);
-struct ast_node *parser_result = NULL;
+struct ast_node *program_root = NULL;
 int errors = 0;
 
 %}
@@ -49,7 +50,7 @@ int errors = 0;
 %%
 
 program:
-    decl_list { parser_result = $1; }
+    decl_list { program_root = $1; }
     ;
 
 decl_list:
@@ -299,12 +300,18 @@ void yyerror(const char *s) {
     fprintf(stderr, "Parse error in line %d: %s\n", yylineno, s);
 }
 
-int main(void) {
+int main(void) {   
+
     if(yyparse() == 0 && errors == 0) {
         printf("Parse successful! Starting Semantic Analysis:\n");
-        semanticAnalysis(parser_result);
+        semanticAnalysis(program_root);
         printf("Semantics successful, Tree:\n");
-        print_ast(parser_result, 0);
+        print_ast(program_root, 0);
+        struct ast_node *current = program_root;
+        while(current) {
+        generateIR(current);
+        current = current->next;
+    }
     }
     else{
         printf("Compilation failed with %d errors.\n", errors);
