@@ -1,7 +1,0 @@
-x: integer = 10;
-
-main: function integer (a: integer) = {
-   print x;
-   x + x;
-   print x;
-}

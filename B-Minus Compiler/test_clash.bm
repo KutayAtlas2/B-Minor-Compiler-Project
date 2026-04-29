@@ -1,8 +1,0 @@
-main : function void() = {
-    if (1 > 0) {
-        z : integer = 20;
-    } 
-    // The IF statement is now a finished 'stmt'. 
-    // The 'block' rule for the IF has finished, so exitScope() HAS been called.
-    print z; // THIS should now trigger "Variable not declared!"
-}
