@@ -1,0 +1,12 @@
+  x = 10
+  func main 
+  arg a 
+L0:
+  t0 = x > 0
+  ifnot t0 goto L1
+  print x
+  t1 = x - 1
+  x = t1
+  goto L0
+L1:
+  endfunc  

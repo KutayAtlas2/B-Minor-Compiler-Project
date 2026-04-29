@@ -1,0 +1,7 @@
+bison -d parser.y
+flex lexical.l
+gcc parser.tab.c lex.yy.c ast.c symboltable.c semanticAnalysis.c -o compiler
+
+
+DO THIS EVERY TIME YOU CHANGE SOMETHING YOU JUST SPENT 2 HOURS TRYING TO FIX NONEXISTENT ERRORS
+BECAUSE YOUR DUMBASS FORGOT TO COMPILE THE PARSER AND FLEX FILE. IDIOT.

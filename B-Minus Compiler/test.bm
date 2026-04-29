@@ -1,0 +1,8 @@
+x: integer = 10;
+
+main: function integer (a: integer) = {
+   while(x > 0){
+      print x;
+      x = x - 1;
+   }
+}
