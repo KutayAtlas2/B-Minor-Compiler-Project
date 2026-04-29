@@ -6,7 +6,7 @@ DO THIS EVERY TIME YOU CHANGE SOMETHING YOU JUST SPENT 2 HOURS TRYING TO FIX NON
 BECAUSE YOUR DUMBASS FORGOT TO COMPILE THE PARSER AND FLEX FILE. IDIOT.
 
 *bash this to turn asm to executable*
-
+./compiler < test.bm
 gcc -no-pie output.s -o my_program
 
 *run*
