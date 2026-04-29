@@ -12,5 +12,7 @@ struct IR_Instr {
 };
 
 char *generateIR(struct ast_node *n);
+void optimize_ir(struct IR_Instr *head);
+void free_ir_list(struct IR_Instr *head);
 
 #endif

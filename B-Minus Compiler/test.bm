@@ -1,11 +1,7 @@
 x: integer = 10;
 
 main: function integer (a: integer) = {
-    y: integer = a * 2 + x;
-    if (y > 20) {
-        print "High", y;
-    } else {
-        print "Low";
-    }
-    return y;
+   print x;
+   x + x;
+   print x;
 }

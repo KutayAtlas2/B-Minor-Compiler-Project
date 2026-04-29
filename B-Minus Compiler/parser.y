@@ -6,6 +6,7 @@
 #include "symboltable.h" // didn't forget it this time tho
 #include "codegen.h"
 
+extern struct IR_Instr *ir_head;
 int yylex(void);
 void yyerror(const char *s);
 struct ast_node *program_root = NULL;
@@ -312,7 +313,14 @@ int main(void) {
         generateIR(current);
         current = current->next;
     }
+        printf("\nOptimizing Intermediate Representation...\n");
+        optimize_ir(ir_head); 
+
+        printf("\nCleaning up memory...\n");
+        free_ast(program_root);
+        free_ir_list(ir_head);
     }
+
     else{
         printf("Compilation failed with %d errors.\n", errors);
         return 1;

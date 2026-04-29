@@ -3,6 +3,7 @@
 #include <string.h>
 #include "parser.tab.h"
 #include "codegen.h"
+#include <ctype.h>
 
 int temp_count = 0;
 int label_count = 0;
@@ -26,7 +27,13 @@ void emit(char *op, char *res, char *a1, char *a2) {
         ir_tail = new_i;
     }
 }
-
+int is_constant(char *s) {
+    if (!s) return 0;
+    for (int i = 0; s[i]; i++) {
+        if (!isdigit(s[i])) return 0;
+    }
+    return 1;
+}
 char *intToString(int val){
    char *s = malloc(16);
    sprintf(s, "%d", val);
@@ -71,7 +78,8 @@ char *generateIR(struct ast_node *n){
 
     switch (n-> kind) {
       case AST_INTEGER_LITERAL:
-        return intToString(n->int_value);
+        char *var = intToString(n->int_value);
+        return var;
       case AST_BOOLEAN_LITERAL:
         return n->int_value ? "1" : "0";
       case AST_STRING_LITERAL: 
@@ -89,6 +97,14 @@ char *generateIR(struct ast_node *n){
           char *right = generateIR(n->right);
           char *target = newTemp(); // returns t1, t2, L1, L2, bla bla bla, and so on.
           emit(opToString(n->op), target, left, right);
+
+          if (n->left && n->left->kind == AST_INTEGER_LITERAL) {
+                free(left);
+             }
+          if (n->right && n->right->kind == AST_INTEGER_LITERAL) {
+                free(right);
+             }
+
           return target;
         }
       case AST_UNARY_EXPR:
@@ -164,6 +180,7 @@ char *generateIR(struct ast_node *n){
          if (n->right) { // if there is an initial value.
             char *val = generateIR(n->right);
             emit("=", n->name, val, NULL);
+            if (n->right->kind == AST_INTEGER_LITERAL) free(val); // free the mem leak. god that took too long to find.
         }
       break;
        }
@@ -171,6 +188,7 @@ char *generateIR(struct ast_node *n){
        {
          char *val = generateIR(n->left);
          emit("return", NULL, val, NULL);
+         if (n->left && n->left->kind == AST_INTEGER_LITERAL) free(val); // this too.
          break;
        }
       case AST_PRINT_STMT: 
@@ -199,6 +217,52 @@ char *generateIR(struct ast_node *n){
        }
     }
     return NULL;
+}
+
+void optimize_ir(struct IR_Instr *head) {
+    struct IR_Instr *curr = head;
+    while (curr) {
+        // Look for binary operations
+        if (curr->arg1 && curr->arg2 && is_constant(curr->arg1) && is_constant(curr->arg2)) {
+            int a = atoi(curr->arg1);
+            int b = atoi(curr->arg2);
+            int res = 0;
+            int found = 1;
+
+            if (strcmp(curr->op, "+") == 0) res = a + b;
+            else if (strcmp(curr->op, "-") == 0) res = a - b;
+            else if (strcmp(curr->op, "*") == 0) res = a * b;
+            else if (strcmp(curr->op, "/") == 0 && b != 0) res = a / b;
+            else found = 0;
+
+            if (found) {
+                free(curr->op);
+                free(curr->arg1);
+                free(curr->arg2);
+                
+                curr->op = strdup("=");
+                curr->arg1 = intToString(res);
+                curr->arg2 = NULL; // arg2 is no longer needed for assignment
+            }
+        }
+        curr = curr->next;
+    }
+}
+// same as freeAst, free the ir list to prevent memory leaks.
+void free_ir_list(struct IR_Instr *head) {
+    struct IR_Instr *curr = head;
+    while (curr) {
+        struct IR_Instr *temp = curr;
+        curr = curr->next;
+
+        // Free all strdup'd strings
+        if (temp->op) free(temp->op);
+        if (temp->result) free(temp->result);
+        if (temp->arg1) free(temp->arg1);
+        if (temp->arg2) free(temp->arg2);
+
+        free(temp);
+    }
 }
 
 

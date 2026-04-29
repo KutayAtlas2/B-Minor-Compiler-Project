@@ -32,7 +32,7 @@ int insertSymbol(char *name, int type) {
         s = s->next;
     }
 
-    symbol *new_sym = malloc(sizeof(symbol));
+    symbol *new_sym = calloc(1, sizeof(symbol));
     new_sym->name = strdup(name);
     new_sym->type = type;
     new_sym->scope = current_scope;

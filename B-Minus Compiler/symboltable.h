@@ -17,4 +17,5 @@ int insertSymbol(char *name, int type); // add: var -> table
 
 symbol* lookUpSymbol(char *name); // validate passport control ahh function.
 symbol* lookUpRetiredSymbol(char *name); //still remember the invalid ones.
+
 #endif
