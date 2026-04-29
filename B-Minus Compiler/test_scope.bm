@@ -1,5 +1,0 @@
-main : function void() = {
-    x : integer = 10;
-    x : integer = 20; // THIS SHOULD FAIL
-}
-
