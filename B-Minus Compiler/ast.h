@@ -23,6 +23,7 @@ typedef enum{
     AST_ASSIGN_EXPR,
     AST_CALL_EXPR,// dial the functions phone number [f(x) type stuff]
     AST_ARG_LIST,
+    AST_ARRAY_INIT,
 
     // literally
     AST_IDENTIFIER, // INDENTIFIER? really, that would have cost at least 3 hours and 5 rage quits

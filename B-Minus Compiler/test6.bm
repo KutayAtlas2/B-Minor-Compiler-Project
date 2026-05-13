@@ -1,8 +1,13 @@
 test: function integer (a: integer, b: integer) = {
-    return (a * b) + 10;
+    return (a * b);
+}
+testo: function integer (a: integer) = {
+    return a + 5;
 }
 
 main: function integer () = {
-    x: integer = test(5, 2);
+    x: integer = test(3, 2);
     print x;
+    y: integer = testo(2);
+    print y;
 }

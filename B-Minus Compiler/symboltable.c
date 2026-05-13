@@ -13,26 +13,29 @@ void enterScope() {
 void exitScope() {
     symbol *s = head;
 
-    while (s != NULL && s->scope == current_scope) {
-        s->retired = 1;
+    while (s != NULL) {
+        if (s->scope == current_scope) {
+            s->retired = 1;
+        }
         s = s->next;
     }
     current_scope--;
 }
 
-int insertSymbol(char *name, int type, int is_function, char *parent_function) {
+int insertSymbol(char *name, int type, int is_function, char *parent_function, int base_type, int array_size) {
     // Check if it exists IN THE CURRENT SCOPE only. Shadowing is allowed for outer scopes.
     symbol *s = head;
 
-
     while (s != NULL) {
-        if (s-> scope == current_scope && strcmp(s->name, name) == 0) return 0; // Error: Redeclared in same scope.
+        if (s->scope == current_scope && !s->retired && strcmp(s->name, name) == 0) return 0; // Error: Redeclared in same scope.
         s = s->next;
     }
 
     symbol *new_sym = calloc(1, sizeof(symbol));
     new_sym->name = strdup(name);
     new_sym->type = type;
+    new_sym->base_type = base_type;
+    new_sym->array_size = array_size;
     new_sym->scope = current_scope;
     new_sym->is_function = is_function;
     new_sym->parent_function = parent_function ? strdup(parent_function) : NULL;
@@ -54,6 +57,66 @@ symbol* lookUpRetiredSymbol(char *name) {
     symbol *current = head;
     while (current != NULL) {
         if (strcmp(current->name, name) == 0) {
+            return current;
+        }
+        current = current->next;
+    }
+    return NULL;
+}
+
+symbol* lookUpSymbolInScope(char *name, char *current_function) {
+    symbol *current = head;
+    symbol *best = NULL;
+
+    while (current != NULL) {
+        if (strcmp(current->name, name) != 0) {
+            current = current->next;
+            continue;
+        }
+
+        // Only consider symbols that were declared in a scope that is active during semantic analysis.
+        if (current->scope > current_scope) {
+            current = current->next;
+            continue;
+        }
+
+        if (current_function && current_function[0] != '\0') {
+            if (current->parent_function && strcmp(current->parent_function, current_function) == 0) {
+                if (!best || current->scope > best->scope) {
+                    best = current;
+                }
+            }
+        } else {
+            if (!current->parent_function) {
+                if (!best || current->scope > best->scope) {
+                    best = current;
+                }
+            }
+        }
+
+        current = current->next;
+    }
+
+    if (best) return best;
+
+    // If no symbol was found in the current function, allow globals.
+    if (current_function && current_function[0] != '\0') {
+        current = head;
+        while (current != NULL) {
+            if (strcmp(current->name, name) == 0 && current->scope == 0 && !current->parent_function) {
+                return current;
+            }
+            current = current->next;
+        }
+    }
+
+    return best;
+}
+
+symbol* lookUpFunctionSymbol(char *name) {
+    symbol *current = head;
+    while (current != NULL) {
+        if (strcmp(current->name, name) == 0 && current->is_function) {
             return current;
         }
         current = current->next;

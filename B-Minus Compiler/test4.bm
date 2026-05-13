@@ -1,9 +1,8 @@
-x: integer; // Global
 
 main: function integer (y: integer) = {
-   x = 100;
-   y = 50;
-   print x; // Should be 100
-   print y; // Should be 50
+  x: array[3] integer;
+  x[0] = 2;
+  print x[0];
+  return 0;
 }
 

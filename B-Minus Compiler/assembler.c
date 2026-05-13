@@ -1,6 +1,7 @@
 #include "assembler.h"
 #include "registers.h"
 #include "symboltable.h"
+#include "parser.tab.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
@@ -57,7 +58,12 @@ int get_stack_offset(char *var_name) {
             return stack_map[i].offset;
         }
     }
-    current_offset -= 8;
+    int element_count = 1;
+    symbol *sym = lookUpSymbol(var_name);
+    if (sym && sym->type == ARRAY) {
+        element_count = sym->array_size;
+    }
+    current_offset -= 8 * element_count;
     stack_map[stack_ptr].name = strdup(var_name);
     stack_map[stack_ptr].offset = current_offset;
     stack_ptr++;
@@ -108,7 +114,11 @@ void generate_asm(struct IR_Instr *ir_head, const char *filename) {
     symbol *temp_s = head;
     while (temp_s != NULL) {
         if (temp_s->scope == 0 && !temp_s->is_function) { // Only global variables, not functions
-            fprintf(asm_fp, "  %s: .quad 0\n", temp_s->name);
+            if (temp_s->type == ARRAY) {
+                fprintf(asm_fp, "  %s: .zero %d\n", temp_s->name, temp_s->array_size * 8);
+            } else {
+                fprintf(asm_fp, "  %s: .quad 0\n", temp_s->name);
+            }
         }
         temp_s = temp_s->next;
     }
@@ -180,6 +190,32 @@ void generate_asm(struct IR_Instr *ir_head, const char *filename) {
              // The quotient is now in RAX
             emit_asm("movq %%rax, %d(%%rbp)", get_stack_offset(curr->result));
             free_register(r2);
+        }
+        else if (strcmp(curr->op, "array_load") == 0) {
+            int r_idx = allocate_register("idx");
+            load_to_reg(curr->arg2, r_idx);
+            int r_target = allocate_register("arrload");
+            if (is_global(curr->arg1)) {
+                emit_asm("movq %s(, %s, 8), %s", curr->arg1, get_reg_name(r_idx), get_reg_name(r_target));
+            } else {
+                emit_asm("movq %d(%%rbp, %s, 8), %s", get_stack_offset(curr->arg1), get_reg_name(r_idx), get_reg_name(r_target));
+            }
+            store_from_reg(r_target, curr->result);
+            free_register(r_target);
+            free_register(r_idx);
+        }
+        else if (strcmp(curr->op, "array_store") == 0) {
+            int r_idx = allocate_register("idx");
+            load_to_reg(curr->arg1, r_idx);
+            int r_val = allocate_register("val");
+            load_to_reg(curr->arg2, r_val);
+            if (is_global(curr->result)) {
+                emit_asm("movq %s, %s(, %s, 8)", get_reg_name(r_val), curr->result, get_reg_name(r_idx));
+            } else {
+                emit_asm("movq %s, %d(%%rbp, %s, 8)", get_reg_name(r_val), get_stack_offset(curr->result), get_reg_name(r_idx));
+            }
+            free_register(r_val);
+            free_register(r_idx);
         }
         else if (strcmp(curr->op, "-") == 0) {
             int r1 = allocate_register("math");

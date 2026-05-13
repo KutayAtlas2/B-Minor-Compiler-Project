@@ -123,10 +123,29 @@ char *generateIR(struct ast_node *n){
         }
       case AST_ASSIGN_EXPR:
         {
+         if (n->left) {
+             char *index = generateIR(n->left);
+             char *val = generateIR(n->right);
+             if (!val) val = strdup("0");
+             emit("array_store", n->name, index, val);
+             if (n->left->kind == AST_INTEGER_LITERAL) free(index);
+             if (n->right->kind == AST_INTEGER_LITERAL) free(val);
+             return n->name;
+         }
          char *val = generateIR(n->right);
          if (!val) val = strdup("0"); // Safety net to prevent Segfault
          emit("=", n->name, val, NULL);
+         if (n->right->kind == AST_INTEGER_LITERAL) free(val);
          return n->name;
+        }
+      case AST_ARRAY_INIT:
+        {
+          struct ast_node *item = n->left;
+          while (item) {
+              generateIR(item);
+              item = item->next;
+          }
+          return NULL;
         }
       case AST_IDENTIFIER:
         return n->name ? strdup(n->name) : strdup("unknown_id");
@@ -191,9 +210,21 @@ char *generateIR(struct ast_node *n){
       case AST_VARIABLE_DECL: 
        {
          if (n->right) { // if there is an initial value.
-            char *val = generateIR(n->right);
-            emit("=", n->name, val, NULL);
-            if (n->right->kind == AST_INTEGER_LITERAL) free(val); // free the mem leak. god that took too long to find.
+            if (n->right->kind == AST_ARRAY_INIT) {
+                struct ast_node *item = n->right->left;
+                int index = 0;
+                while (item) {
+                    char *val = generateIR(item);
+                    emit("array_store", n->name, intToString(index), val);
+                    if (item->kind == AST_INTEGER_LITERAL) free(val);
+                    index++;
+                    item = item->next;
+                }
+            } else {
+                char *val = generateIR(n->right);
+                emit("=", n->name, val, NULL);
+                if (n->right->kind == AST_INTEGER_LITERAL) free(val); // free the mem leak. god that took too long to find.
+            }
         }
       break;
        }

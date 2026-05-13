@@ -9,6 +9,7 @@
 #include "registers.h"
 
 extern struct IR_Instr *ir_head;
+extern FILE *yyin;
 int yylex(void);
 void yyerror(const char *s);
 struct ast_node *program_root = NULL;
@@ -24,7 +25,7 @@ static char current_func_name[256] = "";
     struct ast_node *node;
 }
 // LOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOONNNNNNNNNNNNNNNNNGGGGGGGGGGGGGGGGGG code line
-%type <node> expr stmt stmt_list block var_decl decl_list type func_decl param_list param_list_nonempty param expr_stmt if_stmt while_stmt return_stmt print_stmt expr_list arg_list arg_list_nonempty decl func_body func_suffix
+%type <node> expr stmt stmt_list block var_decl decl_list type func_decl param_list param_list_nonempty param expr_stmt if_stmt while_stmt return_stmt print_stmt expr_list arg_list arg_list_nonempty decl func_body func_suffix array_init
 
 %token <id> IDENTIFIER CHARACTER_LITERAL STRING_LITERAL
 %token <num> NUMBER
@@ -78,14 +79,30 @@ decl:
 
 var_decl:
     IDENTIFIER COLON type SEMICOLON {
-        if (!insertSymbol($1, $3->int_value, 0, NULL)) {
+        char *parent = current_func_name[0] ? current_func_name : NULL;
+        int base_type = ($3->int_value == ARRAY && $3->left) ? $3->left->int_value : 0;
+        int array_size = ($3->int_value == ARRAY) ? $3->num_value : 0;
+        if (!insertSymbol($1, $3->int_value, 0, parent, base_type, array_size)) {
             yyerror("Redeclaration of variable in same scope");
         }
         $$ = make_node(AST_VARIABLE_DECL, $3, NULL);
         $$->name = $1;
         }
     | IDENTIFIER COLON type ASSIGN expr SEMICOLON {
-        if (!insertSymbol($1, $3->int_value, 0, NULL)) {
+        char *parent = current_func_name[0] ? current_func_name : NULL;
+        int base_type = ($3->int_value == ARRAY && $3->left) ? $3->left->int_value : 0;
+        int array_size = ($3->int_value == ARRAY) ? $3->num_value : 0;
+        if (!insertSymbol($1, $3->int_value, 0, parent, base_type, array_size)) {
+            yyerror("Redeclaration of variable in same scope");
+        }
+        $$ = make_node(AST_VARIABLE_DECL, $3, $5);
+        $$->name = $1;
+    }
+    | IDENTIFIER COLON type ASSIGN array_init SEMICOLON {
+        char *parent = current_func_name[0] ? current_func_name : NULL;
+        int base_type = ($3->int_value == ARRAY && $3->left) ? $3->left->int_value : 0;
+        int array_size = ($3->int_value == ARRAY) ? $3->num_value : 0;
+        if (!insertSymbol($1, $3->int_value, 0, parent, base_type, array_size)) {
             yyerror("Redeclaration of variable in same scope");
         }
         $$ = make_node(AST_VARIABLE_DECL, $3, $5);
@@ -106,7 +123,7 @@ type:
 
 func_decl:
    IDENTIFIER COLON FUNCTION type { 
-        if (!insertSymbol($1, $4->int_value, 1, NULL)) {
+        if (!insertSymbol($1, $4->int_value, 1, NULL, 0, 0)) {
             yyerror("Function already exists");
         }
         strncpy(current_func_name, $1, sizeof(current_func_name) - 1);
@@ -148,7 +165,9 @@ param_list_nonempty:
 
 param:
     IDENTIFIER COLON type {
-        if (!insertSymbol($1, $3->int_value, 0, current_func_name)) {
+        int base_type = ($3->int_value == ARRAY && $3->left) ? $3->left->int_value : 0;
+        int array_size = ($3->int_value == ARRAY) ? $3->num_value : 0;
+        if (!insertSymbol($1, $3->int_value, 0, current_func_name, base_type, array_size)) {
             yyerror("Parameter name already used in this scope");
         }
         $$ = make_node(AST_PARAM, $3, NULL); // param(my money)
@@ -259,6 +278,13 @@ expr:
         }
         $$ = make_node(AST_ASSIGN_EXPR, NULL, $3);
                    $$-> name = $1; }
+    | IDENTIFIER LBRACK expr RBRACK ASSIGN expr {
+        if (!lookUpSymbol($1)) {
+            yyerror("Cannot assign to undeclared array variable");
+        }
+        $$ = make_node(AST_ASSIGN_EXPR, $3, $6);
+        $$->name = $1;
+    }
     | IDENTIFIER LBRACK expr RBRACK {
         if (!lookUpSymbol($1)) yyerror("Undeclared array identifier");
         $$ = make_node(AST_ARRAY_LITERAL, NULL, $3); //treat array access like a binary op: [Identifier, Index], brilliant
@@ -288,6 +314,10 @@ arg_list:
     | arg_list_nonempty { $$ = $1; }
     ;
 
+array_init:
+    LBRACE expr_list RBRACE { $$ = make_node(AST_ARRAY_INIT, $2, NULL); }
+    ;
+
 arg_list_nonempty:
     expr { $$ = $1; }
     | arg_list_nonempty COMMA expr {
@@ -306,9 +336,17 @@ void yyerror(const char *s) {
     fprintf(stderr, "Parse error in line %d: %s\n", yylineno, s);
 }
 
-int main(void) {   
+int main(int argc, char **argv) {
+    if (argc > 1) {
+        yyin = fopen(argv[1], "r");
+        if (!yyin) {
+            perror(argv[1]);
+            return 1;
+        }
+    }
 
-    if(yyparse() == 0 && errors == 0) {
+    int result = 0;
+    if (yyparse() == 0 && errors == 0) {
         init_registers();
         printf("Parse successful! Starting Semantic Analysis:\n");
         semanticAnalysis(program_root);
@@ -347,7 +385,12 @@ int main(void) {
 
     else{
         printf("Compilation failed with %d errors.\n", errors);
-        return 1;
+        result = 1;
     }
-    return 0;
+
+    if (yyin && yyin != stdin) {
+        fclose(yyin);
+    }
+
+    return result;
 }
