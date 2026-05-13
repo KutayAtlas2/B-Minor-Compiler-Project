@@ -144,7 +144,7 @@ void generate_asm(struct IR_Instr *ir_head, const char *filename) {
             fprintf(asm_fp, "%s:\n", curr->arg1);
             emit_asm("pushq %%rbp");
             emit_asm("movq %%rsp, %%rbp");
-            emit_asm("subq $248, %%rsp");
+            emit_asm("subq $248, %%rsp"); // thank you https://docs.kernel.org/bpf/classic_vs_extended.html for letting me know about this
 
             symbol *func_sym = lookUpSymbol(curr->arg1);
             int param_count = get_param_count(func_sym); 
