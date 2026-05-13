@@ -1,0 +1,12 @@
+  func test 
+  t0 = a * b
+  t1 = t0 + 10
+  return t1 
+  endfunc  
+  func main 
+  arg 5 
+  arg 2 
+  t2 = call test
+  x = t2
+  print x
+  endfunc  

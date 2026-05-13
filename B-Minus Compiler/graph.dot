@@ -1,0 +1,26 @@
+digraph IR_Flow {
+  node [shape=rect, fontname="Courier"];
+  instr_0x15204040 [label="func | res:- | arg1:test | arg2:-"];
+  instr_0x15204110 [label="* | res:t0 | arg1:a | arg2:b"];
+  instr_0x15204200 [label="+ | res:t1 | arg1:t0 | arg2:10"];
+  instr_0x152045b0 [label="return | res:- | arg1:t1 | arg2:-"];
+  instr_0x15204600 [label="endfunc | res:- | arg1:- | arg2:-"];
+  instr_0x15204650 [label="func | res:- | arg1:main | arg2:-"];
+  instr_0x152046e0 [label="arg | res:- | arg1:5 | arg2:-"];
+  instr_0x15204770 [label="arg | res:- | arg1:2 | arg2:-"];
+  instr_0x15204800 [label="call | res:t2 | arg1:test | arg2:-"];
+  instr_0x15204890 [label="= | res:x | arg1:t2 | arg2:-"];
+  instr_0x15204940 [label="print | res:- | arg1:x | arg2:-"];
+  instr_0x152049b0 [label="endfunc | res:- | arg1:- | arg2:-"];
+  instr_0x15204040 -> instr_0x15204110;
+  instr_0x15204110 -> instr_0x15204200;
+  instr_0x15204200 -> instr_0x152045b0;
+  instr_0x152045b0 -> instr_0x15204600;
+  instr_0x15204600 -> instr_0x15204650;
+  instr_0x15204650 -> instr_0x152046e0;
+  instr_0x152046e0 -> instr_0x15204770;
+  instr_0x15204770 -> instr_0x15204800;
+  instr_0x15204800 -> instr_0x15204890;
+  instr_0x15204890 -> instr_0x15204940;
+  instr_0x15204940 -> instr_0x152049b0;
+}

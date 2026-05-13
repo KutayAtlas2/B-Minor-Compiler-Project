@@ -1,0 +1,8 @@
+test: function integer (a: integer, b: integer) = {
+    return (a * b) + 10;
+}
+
+main: function integer () = {
+    x: integer = test(5, 2);
+    print x;
+}

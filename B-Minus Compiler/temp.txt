@@ -1,0 +1,1541 @@
+#include "assembler.h"
+#include "registers.h"
+#include "symboltable.h"
+#include <stdio.h>
+#include <string.h>
+#include <stdarg.h>
+
+void emit_asm(const char *format, ...);
+int is_constant(char *s);
+int is_global(char *name);
+
+FILE *asm_fp;
+
+typedef struct {
+    char *name;
+    int offset;
+} StackVar;
+
+StackVar stack_map[100];
+int stack_ptr = 0;
+int current_offset = 0;
+
+int get_stack_offset(char *var_name) {
+    for (int i = 0; i < stack_ptr; i++) {
+        if (strcmp(stack_map[i].name, var_name) == 0) {
+            return stack_map[i].offset;
+        }
+    }
+    current_offset -= 8;
+    stack_map[stack_ptr].name = strdup(var_name);
+    stack_map[stack_ptr].offset = current_offset;
+    stack_ptr++;
+    return current_offset;
+}
+
+// Helper to load any operand (Global, Local, or Constant) into a register
+void load_to_reg(char *name, int reg_idx) {
+    if (is_constant(name)) {
+        emit_asm("movq $%s, %s", name, get_reg_name(reg_idx));
+    } else if (is_global(name)) {
+        emit_asm("movq %s(%%rip), %s", name, get_reg_name(reg_idx));
+    } else {
+        emit_asm("movq %d(%%rbp), %s", get_stack_offset(name), get_reg_name(reg_idx));
+    }
+}
+
+// Helper to store a register into a variable (Global or Local)
+void store_from_reg(int reg_idx, char *dest_name) {
+    if (is_global(dest_name)) {
+        emit_asm("movq %s, %s(%%rip)", get_reg_name(reg_idx), dest_name);
+    } else {
+        emit_asm("movq %s, %d(%%rbp)", get_reg_name(reg_idx), get_stack_offset(dest_name));
+    }
+}
+
+void emit_asm(const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    fprintf(asm_fp, "  ");
+    vfprintf(asm_fp, format, args);
+    fprintf(asm_fp, "\n");
+    va_end(args);
+}
+
+void generate_asm(struct IR_Instr *ir_head, const char *filename) {
+    asm_fp = fopen(filename, "w");
+    if (!asm_fp) { perror("File error"); return; }
+
+    fprintf(asm_fp, ".section .data\n");
+    fprintf(asm_fp, "  format_int: .string \"%%d\\n\"\n");
+
+    // Dynamic Global Declarations
+    extern symbol *head; 
+    symbol *temp_s = head;
+    while (temp_s != NULL) {
+        if (temp_s->scope == 0 && temp_s->type != AST_FUNCTION_DECL) {
+            fprintf(asm_fp, "  %s: .quad 0\n", temp_s->name);
+        }
+        temp_s = temp_s->next;
+    }
+    
+    fprintf(asm_fp, "\n.section .text\n");
+    fprintf(asm_fp, ".globl main\n");
+
+    struct IR_Instr *curr = ir_head;
+    init_registers();
+
+    while (curr) {
+        if (curr->op[0] == 'L' && (curr->op[1] >= '0' && curr->op[1] <= '9')) {
+           fprintf(asm_fp, "%s:\n", curr->op);
+          }
+        else if (strcmp(curr->op, "func") == 0) {
+            stack_ptr = 0; current_offset = 0;
+            fprintf(asm_fp, "%s:\n", curr->arg1); // This prints "main:"
+            emit_asm("pushq %%rbp");
+            emit_asm("movq %%rsp, %%rbp");
+            emit_asm("subq $80, %%rsp");
+          } 
+        else if (strcmp(curr->op, "=") == 0) {
+           int r = allocate_register("tmp");
+           load_to_reg(curr->arg1, r);
+           store_from_reg(r, curr->result);
+           free_register(r);
+        }
+        else if (strcmp(curr->op, "+") == 0) {
+            int r1 = allocate_register(curr->arg1);
+            int r2 = allocate_register(curr->arg2);
+            load_to_reg(curr->arg1, r1);
+            load_to_reg(curr->arg2, r2);
+            emit_asm("addq %s, %s", get_reg_name(r2), get_reg_name(r1));
+            store_from_reg(r1, curr->result);
+            free_register(r1); free_register(r2);
+        }
+        else if (strcmp(curr->op, "-") == 0) {
+            int r1 = allocate_register("math");
+            
+            load_to_reg(curr->arg1, r1);
+            
+            if (is_constant(curr->arg2)) {
+                emit_asm("subq $%s, %s", curr->arg2, get_reg_name(r1));
+            } else {
+                int r2 = allocate_register("sub_val");
+                load_to_reg(curr->arg2, r2);
+                emit_asm("subq %s, %s", get_reg_name(r2), get_reg_name(r1));
+                free_register(r2);
+            }
+            
+            store_from_reg(r1, curr->result);
+            free_register(r1);
+        }
+        else if (strcmp(curr->op, "print") == 0) {
+            emit_asm("movq $format_int, %%rdi");
+            int r = allocate_register("p");
+            load_to_reg(curr->arg1, r);
+            emit_asm("movq %s, %%rsi", get_reg_name(r));
+            emit_asm("movq $0, %%rax");
+            emit_asm("call printf");
+            free_register(r);
+        }
+        else if (strcmp(curr->op, "endfunc") == 0) {
+            emit_asm("leave");
+            emit_asm("ret");
+        }
+        else if (strcmp(curr->op, ">") == 0 || strcmp(curr->op, "<") == 0 || strcmp(curr->op, "==") == 0) {
+            int r1 = allocate_register("c1");
+            int r2 = allocate_register("c2");
+            load_to_reg(curr->arg1, r1);
+            load_to_reg(curr->arg2, r2);
+            emit_asm("cmpq %s, %s", get_reg_name(r2), get_reg_name(r1));
+
+            if (strcmp(curr->op, ">") == 0) emit_asm("setg %%al");
+            else if (strcmp(curr->op, "<") == 0) emit_asm("setl %%al");
+            else emit_asm("sete %%al");
+
+            emit_asm("movzbq %%al, %s", get_reg_name(r1));
+            store_from_reg(r1, curr->result);
+            free_register(r1); free_register(r2);
+        }
+        else if (strcmp(curr->op, "ifnot") == 0) {
+            int r = allocate_register("if");
+            load_to_reg(curr->arg1, r);
+            emit_asm("cmpq $0, %s", get_reg_name(r));
+            emit_asm("je %s", curr->arg2);
+            free_register(r);
+        }
+        else if (strcmp(curr->op, "goto") == 0) {
+            emit_asm("jmp %s", curr->arg1);
+        }
+        curr = curr->next;
+    }
+    fclose(asm_fp);
+}
+and 
+#ifndef ASSEMBLER_H
+#define ASSEMBLER_H
+
+#include "codegen.h"
+
+void generate_asm(struct IR_Instr *head, const char *filename);
+
+#endif and #include "ast.h" /* you spent an hour on this cause you forgot to include the library dumbass */
+#include <stdlib.h>
+#include <stdio.h>
+struct ast_node* make_node(ast_kind kind, struct ast_node *l, struct ast_node *r) {
+    struct ast_node *n = calloc(1, sizeof(struct ast_node));
+    n->kind = kind;
+    n->left = l;
+    n->right = r;
+    return n;
+}
+// print to ACTUALLY SEE the thing, will get disabled once assembler is complete.
+void print_ast(struct ast_node *n, int level) {
+    if (!n) return;
+
+    for (int i = 0; i < level; i++) printf("  "); 
+
+    printf("Node: %d", n->kind);
+    if (n->name) printf(" (Name: %s)", n->name);
+    if (n->kind == AST_INTEGER_LITERAL) printf(" (Val: %d)", n->int_value);
+    if (n->kind == AST_FLOAT_LITERAL) printf(" (Val: %f)", n->float_value);
+    if (n->kind == AST_TYPE && n->num_value > 0) printf("[Size: %d]", n->num_value);
+    printf("\n");
+
+    print_ast(n->left, level + 1);
+    print_ast(n->middle, level + 1);
+    print_ast(n->right, level + 1);
+    print_ast(n->next, level); // next items in a list stay at same level
+}
+//free the list to not have any memory leaks
+void free_ast(struct ast_node *n) {
+    if (!n) return;
+    
+    free_ast(n->left);
+    free_ast(n->middle);
+    free_ast(n->right);
+    free_ast(n->next);
+
+    if (n->name) free(n->name);
+    if (n->string_value) free(n->string_value);
+
+    free(n);
+} and #ifndef AST_H
+#define AST_H
+
+typedef enum{
+
+    // declerathingys
+    AST_VARIABLE_DECL,
+    AST_FUNCTION_DECL,
+    AST_PARAM,
+    AST_TYPE, // not my type tho
+
+    // statematamastuff
+    AST_IF_STMT,
+    AST_WHILE_STMT,
+    AST_RETURN_STMT,
+    AST_PRINT_STMT,
+    AST_EXPR_STMT,
+    AST_BLOCK, // the {"long ahh code"} thingy (important ig?)
+
+    //uhh expressions... yea
+    AST_BINARY_EXPR, // +, -, *, /, ^, %
+    AST_UNARY_EXPR, 
+    AST_ASSIGN_EXPR,
+    AST_CALL_EXPR,// dial the functions phone number [f(x) type stuff]
+    AST_ARG_LIST,
+
+    // literally
+    AST_IDENTIFIER, // INDENTIFIER? really, that would have cost at least 3 hours and 5 rage quits
+    AST_INTEGER_LITERAL, // lmao how did u forget this???
+    AST_STRING_LITERAL,
+    AST_FLOAT_LITERAL,
+    AST_CHAR_LITERAL,
+    AST_BOOLEAN_LITERAL,
+    AST_ARRAY_LITERAL,
+    AST_VOID_LITERAL, 
+
+
+} ast_kind;
+
+struct ast_node {
+    ast_kind kind; // so kind
+    int op;  //as in operator
+
+    
+    struct ast_node *left;  
+    struct ast_node *right;  
+    struct ast_node *middle; // for "else" structure
+    struct ast_node *next;   // goes to da next statetamathingymabob
+
+    // the datatatata
+    char *name;              // for AST_IDENTIFIER || AST_VARIABLE_DECL
+    int int_value;           // for AST_INTEGER_LITERAL || AST_BOOLEAN_LITERAL
+    int num_value;
+    double float_value;      // for AST_FLOAT_LITERAL
+    char *string_value;      // for AST_STRING_LITERAL || AST_CHAR_LITERAL
+
+    //Semantic Info (secret item for later)
+    int type;                // The evaluated type (is this whole expr an integer?)
+    struct symbol *symbol;   // Pointer to the Symbol Table entry (where it lives in the *fast express highway(RAM)*)
+};
+
+struct ast_node* make_node(ast_kind kind, struct ast_node* left, struct ast_node* right);
+void print_ast(struct ast_node* node, int level);
+int semanticAnalysis(struct ast_node *n);
+void free_ast(struct ast_node *n);
+
+#endif and #include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include "parser.tab.h"
+#include "codegen.h"
+#include <ctype.h>
+
+int temp_count = 0;
+int label_count = 0;
+
+struct IR_Instr *ir_head = NULL;
+struct IR_Instr *ir_tail = NULL;
+
+void emit(char *op, char *res, char *a1, char *a2) {
+    struct IR_Instr *new_i = malloc(sizeof(struct IR_Instr));
+    new_i->op = op ? strdup(op) : NULL;
+    new_i->result = res ? strdup(res) : NULL;
+    new_i->arg1 = a1 ? strdup(a1) : NULL;
+    new_i->arg2 = a2 ? strdup(a2) : NULL;
+    new_i->next = NULL;
+
+    if (!ir_head) {
+        ir_head = new_i;
+        ir_tail = new_i;
+    } else {
+        ir_tail->next = new_i;
+        ir_tail = new_i;
+    }
+}
+int is_constant(char *s) {
+    if (!s) return 0;
+    for (int i = 0; s[i]; i++) {
+        if (!isdigit(s[i])) return 0;
+    }
+    return 1;
+}
+char *intToString(int val){
+   char *s = malloc(16);
+   sprintf(s, "%d", val);
+   return s;
+
+}
+char *newTemp(){
+    char *t = malloc(16); //16 for the byte size.
+    sprintf(t, "t%d", temp_count++);
+    return t;
+}
+char *newLabel() {
+    char *l = malloc(16);
+    sprintf(l, "L%d", label_count++);
+    return l;
+}
+char *opToString(int op /* as in operation */){
+      switch(op)
+        {
+        case PLUS:   return "+";
+        case MINUS:  return "-";
+        case MUL:    return "*";
+        case DIV:    return "/";
+        case ASSIGN: return "=";
+        case MOD:    return "%";
+        case EXPO:   return "^";
+        case EQ:     return "==";
+        case NEQ:    return "!=";
+        case LT:     return "<";
+        case LE:     return "<=";
+        case GT:     return ">";
+        case GE:     return ">=";
+        case AND:    return "&&";
+        case OR:     return "||";
+        case NOT:    return "!";
+        default:     return "?";
+      }
+}
+char *generateIR(struct ast_node *n){
+    if(!n) return NULL;
+
+    switch (n-> kind) {
+      case AST_INTEGER_LITERAL:
+        char *var = intToString(n->int_value);
+        return var;
+      case AST_BOOLEAN_LITERAL:
+        return n->int_value ? "1" : "0";
+      case AST_STRING_LITERAL: 
+        return n->string_value; 
+      case AST_ARRAY_LITERAL: 
+      {
+         char *index = generateIR(n->right); // Get the index i
+         char *target = newTemp();
+         emit("array_load", target, n->name, index);
+         return target;
+      }
+      case AST_BINARY_EXPR:
+        {
+          char *left = generateIR(n->left);
+          char *right = generateIR(n->right);
+          char *op_str = opToString(n->op);
+          char *target = newTemp(); // returns t1, t2, L1, L2, bla bla bla, and so on.
+          emit(op_str, target, left, right);
+
+          if (n->left && n->left->kind == AST_INTEGER_LITERAL) {
+                free(left);
+             }
+          if (n->right && n->right->kind == AST_INTEGER_LITERAL) {
+                free(right);
+             }
+
+          return target;
+        }
+      case AST_UNARY_EXPR:
+        {
+         char *op_val = generateIR(n->left);
+         char *target = newTemp();
+         emit(opToString(n->op), target, op_val, NULL);
+         return target;
+        }
+      case AST_ASSIGN_EXPR:
+        {
+          char *val = generateIR(n->right);
+          emit("=", n->name, val, NULL);
+          return n->name;
+        }
+      case AST_IDENTIFIER:
+        return n->name;
+      case AST_BLOCK:
+        {
+         if (!n->left) return NULL; // for safety
+          struct ast_node *stmt = n->left;
+          while(stmt) {
+             generateIR(stmt);
+             stmt = stmt->next;
+          }
+          return NULL;
+        }
+      case AST_IF_STMT: 
+       {
+         char *cond = generateIR(n->left);
+         char *labelElse = newLabel();
+         char *labelEnd = newLabel();
+
+         emit("ifnot", NULL, cond, labelElse);
+         generateIR(n->middle); // if block.
+         emit("goto", NULL, labelEnd, NULL);
+    
+         emit("label", NULL, labelElse, NULL);
+         generateIR(n->right);  // else block.
+         emit("label", NULL, labelEnd, NULL);
+         break;
+       }
+      case AST_CALL_EXPR:
+       { 
+         struct ast_node *arg = n->left;
+         while(arg){
+          char *argName = generateIR(arg);
+          emit("param", NULL, argName, NULL);
+          arg = arg->next;
+         }
+         
+         char *target = newTemp();
+         emit("call", target, n->name, NULL);
+         return target;
+         break;
+       } 
+      case AST_WHILE_STMT: 
+       {
+         if (n->right) {
+             printf("DEBUG: While Loop Body Node Kind: %d\n", n->right->kind);
+         } else {
+             printf("DEBUG: Warning - While loop has no body (n->middle is NULL)\n");
+         }
+         char *labelStart = newLabel();
+         char *labelEnd = newLabel();
+  
+         emit("label", NULL, labelStart, NULL);
+         char *cond = generateIR(n->left);
+         emit("ifnot", NULL, cond, labelEnd);
+    
+         generateIR(n->right); // the looop... hehe
+    
+         emit("goto", NULL, labelStart, NULL);
+         emit("label", NULL, labelEnd, NULL);
+
+         free(labelStart);
+         free(labelEnd);
+         if (cond && !is_constant(cond)) free(cond);
+         break;
+       }
+      case AST_VARIABLE_DECL: 
+       {
+         if (n->right) { // if there is an initial value.
+            char *val = generateIR(n->right);
+            emit("=", n->name, val, NULL);
+            if (n->right->kind == AST_INTEGER_LITERAL) free(val); // free the mem leak. god that took too long to find.
+        }
+      break;
+       }
+      case AST_RETURN_STMT:
+       {
+         char *val = generateIR(n->left);
+         emit("return", NULL, val, NULL);
+         if (n->left && n->left->kind == AST_INTEGER_LITERAL) free(val); // this too.
+         break;
+       }
+      case AST_PRINT_STMT: 
+       {
+         struct ast_node *arg = n->left;
+         while(arg) {
+              char *val = generateIR(arg);
+              emit("print", NULL, val, NULL);
+              arg = arg->next;
+            }
+          break; 
+       }
+      case AST_FUNCTION_DECL: 
+       {
+         emit("func", NULL, n->name, NULL); // mark(invincible) it function entry.
+
+         struct ast_node *param = n->right;
+         while(param) {
+            emit("arg", NULL, param->name, NULL); // INCOMING! BRACE FOR PARAMETERS!
+            param = param->next;
+           }
+
+         generateIR(n->middle);         // process the function body.
+         emit("endfunc", NULL, NULL, NULL);
+         break;
+       }
+      case AST_EXPR_STMT:
+        {
+          if (n->left) generateIR(n->left);
+          else if (n->right) generateIR(n->right);
+          break;
+        }
+      default:
+          printf("WARNING: Unhandled AST Node Kind: %d\n", n->kind);
+        break;
+    }
+    return NULL;
+}
+void optimize_ir(struct IR_Instr *head) {
+    struct IR_Instr *curr = head;
+    while (curr) {
+        // Look for binary operations
+        if (curr->arg1 && curr->arg2 && is_constant(curr->arg1) && is_constant(curr->arg2)) {
+            int a = atoi(curr->arg1);
+            int b = atoi(curr->arg2);
+            int res = 0;
+            int found = 1;
+
+            if (strcmp(curr->op, "+") == 0) res = a + b;
+            else if (strcmp(curr->op, "-") == 0) res = a - b;
+            else if (strcmp(curr->op, "*") == 0) res = a * b;
+            else if (strcmp(curr->op, "/") == 0 && b != 0) res = a / b;
+            else found = 0;
+
+            if (found) {
+                free(curr->op);
+                free(curr->arg1);
+                free(curr->arg2);
+                
+                curr->op = strdup("=");
+                curr->arg1 = intToString(res);
+                curr->arg2 = NULL; // arg2 is no longer needed for assignment
+            }
+        }
+        curr = curr->next;
+    }
+}
+// same as freeAst, free the ir list to prevent memory leaks.
+void free_ir_list(struct IR_Instr *head) {
+    struct IR_Instr *curr = head;
+    while (curr) {
+        struct IR_Instr *temp = curr;
+        curr = curr->next;
+
+        // Free all strdup'd strings
+        if (temp->op) free(temp->op);
+        if (temp->result) free(temp->result);
+        if (temp->arg1) free(temp->arg1);
+        if (temp->arg2) free(temp->arg2);
+
+        free(temp);
+    }
+}
+//these two functions will create a .dot file
+void dump_ir_to_file(const char *filename, struct IR_Instr *head) {
+    FILE *fp = fopen(filename, "w");
+    if (!fp) return;
+
+    struct IR_Instr *curr = head;
+    while (curr) {
+        if (strcmp(curr->op, "label") == 0) {
+            fprintf(fp, "%s:\n", curr->arg1);
+        } else if (strcmp(curr->op, "goto") == 0) {
+            fprintf(fp, "  goto %s\n", curr->arg1);
+        } else if (strcmp(curr->op, "ifnot") == 0) {
+            fprintf(fp, "  ifnot %s goto %s\n", curr->arg1, curr->arg2);
+        } else if (strcmp(curr->op, "print") == 0) {
+            fprintf(fp, "  print %s\n", curr->arg1);
+        } else if (strcmp(curr->op, "=") == 0) {
+            fprintf(fp, "  %s = %s\n", curr->result, curr->arg1);
+        } else if (curr->result && curr->arg1 && curr->arg2) {
+            fprintf(fp, "  %s = %s %s %s\n", curr->result, curr->arg1, curr->op, curr->arg2);
+        } else if (curr->result && curr->arg1) {
+            fprintf(fp, "  %s = %s %s\n", curr->result, curr->op, curr->arg1);
+        } else {
+            fprintf(fp, "  %s %s %s\n", curr->op, 
+                    curr->arg1 ? curr->arg1 : "", 
+                    curr->arg2 ? curr->arg2 : "");
+        }
+        curr = curr->next;
+    }
+    fclose(fp);
+}
+void generate_dot_file(const char *filename, struct IR_Instr *head) {
+    FILE *fp = fopen(filename, "w");
+    if(!fp) return;
+    fprintf(fp, "digraph IR_Flow {\n  node [shape=rect, fontname=\"Courier\"];\n");
+
+    struct IR_Instr *curr = head;
+    //define all the nodes.
+    while (curr) {
+        fprintf(fp, "  instr_%p [label=\"%s | res:%s | arg1:%s | arg2:%s\"];\n", 
+                (void*)curr, curr->op, 
+                curr->result ? curr->result : "-", 
+                curr->arg1 ? curr->arg1 : "-", 
+                curr->arg2 ? curr->arg2 : "-");
+        curr = curr->next;
+    }
+    // end of defining.
+    curr = head;
+    while (curr) {
+        if (strcmp(curr->op, "goto") == 0) {
+            struct IR_Instr *t = head;
+            while(t) {
+                if (strcmp(t->op, "label") == 0 && t->arg1 && strcmp(t->arg1, curr->arg1) == 0) {
+                    fprintf(fp, "  instr_%p -> instr_%p [color=blue, label=\"jump\"];\n", (void*)curr, (void*)t);
+                    break;
+                }
+                t = t->next;
+            }
+        } else if (strcmp(curr->op, "ifnot") == 0) {
+            
+            if (curr->next) fprintf(fp, "  instr_%p -> instr_%p [color=green];\n", (void*)curr, (void*)curr->next);
+            
+            struct IR_Instr *t = head;
+            while(t) {
+                if (strcmp(t->op, "label") == 0 && t->arg1 && strcmp(t->arg1, curr->arg2) == 0) {
+                    fprintf(fp, "  instr_%p -> instr_%p [color=red, label=\"branch\"];\n", (void*)curr, (void*)t);
+                    break;
+                }
+                t = t->next;
+            }
+        } else if (curr->next) {
+            fprintf(fp, "  instr_%p -> instr_%p;\n", (void*)curr, (void*)curr->next);
+        }
+        curr = curr->next;
+    }
+    fprintf(fp, "}\n");
+    fclose(fp);
+} and #ifndef IR_H
+#define IR_H
+
+#include "ast.h"
+
+struct IR_Instr {
+    char *result;
+    char *arg1;
+    char *op;
+    char *arg2;
+    struct IR_Instr *next;
+};
+
+char *generateIR(struct ast_node *n);
+void optimize_ir(struct IR_Instr *head);
+void free_ir_list(struct IR_Instr *head);
+void dump_ir_to_file(const char *filename, struct IR_Instr *head);
+void generate_dot_file(const char *filename, struct IR_Instr *head);
+
+#endif and %{
+#include "parser.tab.h"   // Generated by Bison
+#include <stdlib.h>
+#include <string.h>
+
+%}
+
+%option yylineno
+
+%%
+
+"integer"       { return INTEGER; }
+"float"         { return FLOAT; }
+"boolean"       { return BOOLEAN; }
+"char"          { return CHAR; }
+"string"        { return STRING; }
+"array"         { return ARRAY; }
+"void"          { return VOID; }
+
+"if"            { return IF; }
+"else"          { return ELSE; }
+"while"         { return WHILE; }
+"return"        { return RETURN; }
+"print"         { return PRINT; }
+"function"      { return FUNCTION; }
+
+"true"          { return TRUE; }
+"false"         { return FALSE; }
+
+[a-zA-Z_][a-zA-Z0-9_]* {
+    yylval.id = strdup(yytext);
+    return IDENTIFIER;
+}
+
+
+[0-9]+ {
+    yylval.num = atoi(yytext);
+    return NUMBER;
+}
+
+[0-9]+"."[0-9]+ {
+    yylval.fnum = atof(yytext);
+    return FLOAT_LITERAL;
+}
+
+\'([^'\\\n]|\\.)\'     { yylval.id = strdup(yytext); return CHARACTER_LITERAL; }
+\"([^"\\\n]|\\.)*\"    { yylval.id = strdup(yytext); return STRING_LITERAL; }
+
+"+"             { return PLUS; }
+"-"             { return MINUS; }
+"*"             { return MUL; }
+"/"             { return DIV; }
+"%"             { return MOD; }
+"^"             { return EXPO; }
+"="             { return ASSIGN; }
+"=="            { return EQ; }
+"!="            { return NEQ; }
+"<"             { return LT; }
+"<="            { return LE; }
+">"             { return GT; }
+">="            { return GE; }
+
+"&&"            { return AND; }
+"||"            { return OR; }
+":"             { return COLON; }
+"!"             { return NOT; }
+
+";"             { return SEMICOLON; }
+","             { return COMMA; }
+"("             { return LPAREN; }
+")"             { return RPAREN; }
+"{"             { return LBRACE; }
+"}"             { return RBRACE; }
+"["             { return LBRACK; }                
+"]"             { return RBRACK; }
+
+[ \t\r\n]+      ;   
+
+"//".*          ;   
+"/*"([^*]|\*+[^*/])*\*+"/" ;   
+
+. {
+     printf("Unknown character: %s on line %d\n", yytext, yylineno); 
+}
+
+%%
+
+int yywrap(void) {
+    return 1;
+} and   func main 
+  arg a 
+L0:
+  t0 = x > 0
+  ifnot t0 goto L1
+  print x
+  t1 = x - 1
+  x = t1
+  goto L0
+L1:
+  endfunc  
+ and .section .data
+  format_int: .string "%d\n"
+  x: .quad 0
+
+.section .text
+.globl main
+main:
+  pushq %rbp
+  movq %rsp, %rbp
+  subq $80, %rsp
+  movq x(%rip), %rax
+  movq $0, %rbx
+  cmpq %rbx, %rax
+  setg %al
+  movzbq %al, %rax
+  movq %rax, -8(%rbp)
+  movq -8(%rbp), %rax
+  cmpq $0, %rax
+  je L1
+  movq $format_int, %rdi
+  movq x(%rip), %rax
+  movq %rax, %rsi
+  movq $0, %rax
+  call printf
+  movq x(%rip), %rax
+  subq $1, %rax
+  movq %rax, -16(%rbp)
+  movq -16(%rbp), %rax
+  movq %rax, x(%rip)
+  jmp L0
+  leave
+  ret
+ and %{
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "ast.h" // again, how did you forget to include it TWICE... TWICE!
+#include "symboltable.h" // didn't forget it this time tho
+#include "codegen.h"
+#include "assembler.h"
+#include "registers.h"
+
+extern struct IR_Instr *ir_head;
+int yylex(void);
+void yyerror(const char *s);
+struct ast_node *program_root = NULL;
+int errors = 0;
+
+%}
+
+%union {
+    char* id;
+    int num;
+    double fnum;
+    struct ast_node *node;
+}
+// LOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOONNNNNNNNNNNNNNNNNGGGGGGGGGGGGGGGGGG code line
+%type <node> expr stmt stmt_list block var_decl decl_list type func_decl param_list param_list_nonempty param expr_stmt if_stmt while_stmt return_stmt print_stmt expr_list arg_list arg_list_nonempty decl func_body func_suffix
+
+%token <id> IDENTIFIER CHARACTER_LITERAL STRING_LITERAL
+%token <num> NUMBER
+%token <fnum> FLOAT_LITERAL
+%token INTEGER FLOAT BOOLEAN CHAR STRING ARRAY VOID
+%token IF ELSE WHILE RETURN PRINT FUNCTION
+%token TRUE FALSE
+%token PLUS MINUS MUL DIV MOD EXPO ASSIGN EQ NEQ LT LE GT GE AND OR NOT
+%token COLON SEMICOLON COMMA LPAREN RPAREN LBRACE RBRACE LBRACK RBRACK
+
+
+%right ASSIGN
+%left OR
+%left AND
+%left EQ NEQ
+%left LT LE GT GE
+%left PLUS MINUS
+%left MUL DIV MOD
+%right EXPO
+%right NOT
+
+%nonassoc LOWER_THAN_ELSE
+%nonassoc ELSE
+
+%define parse.error verbose
+
+%%
+
+program:
+    decl_list { program_root = $1; }
+    ;
+
+decl_list:
+    decl_list decl {
+        if ($1 == NULL) { $$ = $2; }
+        else {
+            struct ast_node *temp = $1;
+            while (temp->next) temp = temp->next;
+            temp->next = $2;
+            $$ = $1;
+        }
+    }
+    | /* empty */ { $$ = NULL; }
+    ;
+
+decl:
+    var_decl
+    | func_decl
+    ;
+
+
+var_decl:
+    IDENTIFIER COLON type SEMICOLON {
+        if (!insertSymbol($1, $3->int_value)) {
+            yyerror("Redeclaration of variable in same scope");
+        }
+        $$ = make_node(AST_VARIABLE_DECL, $3, NULL);
+        $$->name = $1;
+        }
+    | IDENTIFIER COLON type ASSIGN expr SEMICOLON {
+        if (!insertSymbol($1, $3->int_value)) {
+            yyerror("Redeclaration of variable in same scope");
+        }
+        $$ = make_node(AST_VARIABLE_DECL, $3, $5);
+        $$->name = $1;
+    }
+    ;
+
+type:
+    INTEGER { $$ = make_node(AST_TYPE, NULL, NULL); $$->int_value = INTEGER; }
+    | FLOAT { $$ = make_node(AST_TYPE, NULL, NULL); $$->int_value = FLOAT; }
+    | BOOLEAN { $$ = make_node(AST_TYPE, NULL, NULL); $$->int_value = BOOLEAN; }
+    | CHAR { $$ = make_node(AST_TYPE, NULL, NULL); $$->int_value = CHAR; }
+    | STRING { $$ = make_node(AST_TYPE, NULL, NULL); $$->int_value = STRING; }
+    | VOID { $$ = make_node(AST_TYPE, NULL, NULL); $$->int_value = VOID; }
+    | ARRAY LBRACK NUMBER RBRACK type { $$ = make_node(AST_TYPE, $5, NULL); $$->int_value = ARRAY; $$->num_value = $3; }
+    ;
+
+
+func_decl:
+    IDENTIFIER COLON FUNCTION type { 
+        if (!insertSymbol($1, AST_FUNCTION_DECL)) {
+            yyerror("Function already exists");
+        }
+    } LPAREN { enterScope(); } param_list RPAREN func_suffix {
+        $$ = $10; // func_suffix returns the node
+        $$->left = $4;
+        $$->right = $8;
+        $$->name = $1;
+        exitScope();
+    }
+    ;
+
+func_suffix:
+    ASSIGN func_body {
+        $$ = make_node(AST_FUNCTION_DECL, NULL, NULL);
+        $$->middle = $2;
+    }
+    | SEMICOLON {
+        $$ = make_node(AST_FUNCTION_DECL, NULL, NULL);
+        // Prototype, so middle stays NULL
+    }
+    ;
+
+param_list:
+    /* empty */ { $$ = NULL; }
+    | param_list_nonempty
+    ;
+
+param_list_nonempty:
+    param { $$ = $1; }
+    | param_list_nonempty COMMA param {
+        struct ast_node *temp = $1;
+        while(temp->next) temp = temp->next;
+        temp->next = $3;
+        $$ = $1;
+    }
+    ;
+
+param:
+    IDENTIFIER COLON type {
+        if (!insertSymbol($1, $3->int_value)) {
+            yyerror("Parameter name already used in this scope");
+        }
+        $$ = make_node(AST_PARAM, $3, NULL); // param(my money)
+        $$->name = $1;
+              }
+    ;
+
+block:
+    LBRACE { enterScope(); } stmt_list RBRACE { 
+        exitScope();
+        $$ = make_node(AST_BLOCK, $3, NULL); }
+    ;
+
+func_body:
+    LBRACE stmt_list RBRACE { $$ = make_node(AST_BLOCK, $2, NULL); }
+    ;
+
+stmt_list:
+    stmt_list stmt {
+          if ($1 == NULL) { $$ = $2; }
+          else {
+              struct ast_node *temp = $1;
+              while (temp->next) temp = temp->next;
+              temp->next = $2;
+              $$ = $1;
+          }
+      }
+    | /* empty */ { $$ = NULL; }
+    ;
+
+stmt:
+    var_decl
+    | expr_stmt
+    | if_stmt
+    | while_stmt
+    | return_stmt
+    | print_stmt
+    | block
+    ;
+
+expr_stmt:
+    expr SEMICOLON { $$ = make_node(AST_EXPR_STMT, $1, NULL); }
+    ;
+
+if_stmt:
+    IF LPAREN expr RPAREN stmt  %prec LOWER_THAN_ELSE {
+        $$ = make_node(AST_IF_STMT, $3, $5); 
+                } 
+    | IF LPAREN expr RPAREN stmt ELSE stmt {
+        $$ = make_node(AST_IF_STMT, $3, NULL);
+        $$->middle = $5;
+        $$->right = $7; 
+                }
+    ;
+
+while_stmt:
+    WHILE LPAREN expr RPAREN stmt {
+        $$ = make_node(AST_WHILE_STMT, $3, $5);
+                }
+    ;
+
+return_stmt:
+    RETURN expr SEMICOLON { $$ = make_node(AST_RETURN_STMT, $2, NULL); }
+    | RETURN SEMICOLON { $$ = make_node(AST_RETURN_STMT, NULL, NULL); }
+    ;
+
+print_stmt:
+    PRINT expr_list SEMICOLON { $$ = make_node(AST_PRINT_STMT, $2, NULL); }
+    ;
+
+expr_list:
+    expr { $$ = $1; }
+    | expr_list COMMA expr {
+        struct ast_node *temp = $1;
+        while(temp->next) temp = temp->next;
+        temp->next = $3;
+        $$ = $1;
+    }
+    ;
+
+expr:
+    expr PLUS expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = PLUS; }
+    | expr MINUS expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = MINUS; }
+    | expr MUL expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = MUL; }
+    | expr DIV expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = DIV; }
+    | expr MOD expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = MOD; }
+    | expr EXPO expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = EXPO; }
+    | expr EQ expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = EQ; }
+    | expr NEQ expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = NEQ; }
+    | expr LT expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = LT; }
+    | expr LE expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = LE; }
+    | expr GT expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = GT; }
+    | expr GE expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = GE; }
+    | expr AND expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = AND; }
+    | expr OR expr { $$ = make_node(AST_BINARY_EXPR, $1, $3); $$->op = OR; }
+    | NOT expr { $$ = make_node(AST_UNARY_EXPR, $2, NULL); $$->op = NOT; }
+    | LPAREN expr RPAREN {$$ = $2; }
+    | IDENTIFIER { 
+        symbol *s = lookUpSymbol($1);
+        if (!s) {
+            yyerror("Variable not declared!");
+        }
+        $$ = make_node(AST_IDENTIFIER, NULL, NULL);
+                   $$-> name = $1; }
+    | IDENTIFIER ASSIGN expr { 
+        if (!lookUpSymbol($1)) {
+            yyerror("Cannot assign to undeclared variable");
+        }
+        $$ = make_node(AST_ASSIGN_EXPR, NULL, $3);
+                   $$-> name = $1; }
+    | IDENTIFIER LBRACK expr RBRACK {
+        if (!lookUpSymbol($1)) yyerror("Undeclared array identifier");
+        $$ = make_node(AST_ARRAY_LITERAL, NULL, $3); //treat array access like a binary op: [Identifier, Index], brilliant
+        $$->name = $1;
+       }
+    | IDENTIFIER LPAREN arg_list RPAREN {
+        if (!lookUpSymbol($1)) yyerror("Call to undeclared function");
+        $$ = make_node(AST_CALL_EXPR, $3, NULL);
+        $$->name = $1;
+         }
+    | NUMBER { $$ = make_node(AST_INTEGER_LITERAL, NULL, NULL);
+                   $$-> int_value = $1; }
+    | CHARACTER_LITERAL { $$ = make_node(AST_CHAR_LITERAL, NULL, NULL);
+                   $$-> name = $1; }
+    | STRING_LITERAL { $$ = make_node(AST_STRING_LITERAL, NULL, NULL);
+                   $$-> string_value = $1; }
+    | FLOAT_LITERAL { $$ = make_node(AST_FLOAT_LITERAL, NULL, NULL);
+                   $$-> float_value = $1; }
+    | TRUE { $$ = make_node(AST_BOOLEAN_LITERAL, NULL, NULL);
+                   $$-> int_value = 1; }
+    | FALSE { $$ = make_node(AST_BOOLEAN_LITERAL, NULL, NULL);
+                   $$-> int_value = 0; }
+    ;
+
+arg_list:
+    /* empty */ { $$ = NULL; }
+    | arg_list_nonempty { $$ = $1; }
+    ;
+
+arg_list_nonempty:
+    expr { $$ = $1; }
+    | arg_list_nonempty COMMA expr {
+        struct ast_node *temp = $1;
+        while(temp->next) temp = temp->next;
+        temp->next = $3;
+        $$ = $1;
+    }
+    ;
+
+%%
+
+void yyerror(const char *s) {
+    extern int yylineno; 
+    errors++;
+    fprintf(stderr, "Parse error in line %d: %s\n", yylineno, s);
+}
+
+int main(void) {   
+
+    if(yyparse() == 0 && errors == 0) {
+        init_registers();
+        printf("Parse successful! Starting Semantic Analysis:\n");
+        semanticAnalysis(program_root);
+        printf("Semantics successful, Tree:\n");
+        struct ast_node *current = program_root;
+        while(current) {
+        if (current->kind == AST_FUNCTION_DECL) { 
+        generateIR(current);
+    }
+        current = current->next;
+    }
+        printf("\nOptimizing Intermediate Representation...\n");
+        optimize_ir(ir_head); 
+        dump_ir_to_file("output.ir", ir_head);
+        generate_dot_file("graph.dot", ir_head);
+
+        printf("Generating Assembly (output.s)...\n");
+        generate_asm(ir_head, "output.s");   //YOU IDIOT YOU FORGOT THIS DUMBASS... AGAIN!
+
+        printf("\nCleaning up memory...\n");
+        free_ast(program_root);
+
+        free_ir_list(ir_head);
+    }
+
+    else{
+        printf("Compilation failed with %d errors.\n", errors);
+        return 1;
+    }
+    return 0;
+}
+and #include "registers.h"
+#include <string.h>
+#include <stdlib.h>
+
+Register reg_pool[NUM_REGS];
+const char* reg_names[] = {"%rax", "%rbx", "%rcx", "%rdx", "%rsi", "%rdi", "%r8", "%r9"};
+
+void init_registers() {
+    for (int i = 0; i < NUM_REGS; i++) {
+        reg_pool[i].name = reg_names[i];
+        reg_pool[i].is_free = true;
+        if(reg_pool[i].temp_name) free(reg_pool[i].temp_name);
+        reg_pool[i].temp_name = NULL;
+    }
+}
+
+int allocate_register(char *temp) {
+    for (int i = 0; i < NUM_REGS; i++) {
+        if (!reg_pool[i].is_free && reg_pool[i].temp_name && strcmp(reg_pool[i].temp_name, temp) == 0) {
+            return i;
+        }
+    }
+    for (int i = 0; i < NUM_REGS; i++) {
+        if (reg_pool[i].is_free) {
+            reg_pool[i].is_free = false;
+            reg_pool[i].temp_name = strdup(temp);
+            return i;
+        }
+    }
+    free_register(0);
+    reg_pool[0].is_free = false;
+    reg_pool[0].temp_name = strdup(temp);
+    return 0;
+}
+
+void free_register(int i) {
+    if (i >= 0 && i < NUM_REGS) {
+        reg_pool[i].is_free = true;
+        if (reg_pool[i].temp_name) {
+            free(reg_pool[i].temp_name);
+            reg_pool[i].temp_name = NULL;
+        }
+    }
+}
+
+const char* get_reg_name(int i) { return reg_pool[i].name; } and #ifndef REGISTERS_H
+#define REGISTERS_H
+
+#include <stdio.h>
+#include <stdbool.h>
+
+// use 8 general purpose registers cuz this is a simple compiler.
+#define NUM_REGS 8
+
+typedef struct {
+    const char *name;
+    bool is_free;
+    char *temp_name; // where t1, t0, etc currently lives.
+} Register;
+
+void init_registers();
+int allocate_register(char *temp);
+void free_register(int reg_index);
+
+
+// helper to get the register name by index
+const char* get_reg_name(int index);
+
+#endif and #include "ast.h"
+#include <stdlib.h>
+#include "symboltable.h"
+#include <stdio.h>
+#include "parser.tab.h"
+
+extern int current_scope;
+
+const char *typeToString(int type){
+ switch(type){
+   case INTEGER:
+     return " an integer type";
+   break;
+   case FLOAT: 
+     return "a float type";
+   break;
+   case STRING:  
+    return "a string";
+   break; 
+    case BOOLEAN: 
+     return "a boolean";
+    break;
+    case CHAR:
+     return "a char";
+    break;
+    case ARRAY:
+     return "an array";
+    break;
+    case VOID:    
+     return "a void";
+    break;
+    default:      
+     return "an unknown type";
+    break;
+ }
+}
+
+int semanticAnalysis(struct ast_node *n) {
+
+    if(!n) {return AST_VOID_LITERAL;}
+
+    switch (n->kind) {
+        case AST_IDENTIFIER: {
+    
+    symbol *s = lookUpRetiredSymbol(n->name); 
+    
+                if (!s) {
+                    fprintf(stderr, "Error: Variable '%s' not found in history\n", n->name);
+                    exit(1);
+             }
+                n->symbol = s;
+                n->type = s->type;
+                break;
+            } 
+
+        case AST_ARRAY_LITERAL: { // The "Access" rule
+                symbol *s = lookUpRetiredSymbol(n->name);
+                if (!s) {
+                     fprintf(stderr, "Error: Array '%s' undeclared\n", n->name);
+                     exit(1);
+               }
+    
+    
+                int index_type = semanticAnalysis(n->right); 
+    
+                if (s->type != ARRAY) {
+                     fprintf(stderr, "Error: '%s' is not an array\n", n->name);
+                     exit(1);
+               }
+        
+                if (index_type != INTEGER) {
+                     fprintf(stderr, "Error: Array index for '%s' must be an integer\n", n->name);
+                     exit(1);
+               }
+
+                n->symbol = s;
+                n->type = INTEGER; 
+                break;
+        }
+
+        case AST_BINARY_EXPR: {
+
+             int left_type = semanticAnalysis(n->left);
+             int right_type = semanticAnalysis(n->right);
+
+            if (left_type != right_type) {
+                fprintf(stderr, "Type Mismatch: Cannot operate on %d and %d\n", left_type, right_type);
+                exit(1);
+            }
+            n->type = left_type;
+            break;
+        }
+        case AST_BLOCK:
+            enterScope(); 
+
+             semanticAnalysis(n->left);
+             semanticAnalysis(n->middle);
+             semanticAnalysis(n->right);
+
+             exitScope(); 
+             break;
+        case AST_IF_STMT:
+             semanticAnalysis(n->left);
+             semanticAnalysis(n->middle);
+             semanticAnalysis(n->right);
+             break;
+        case AST_RETURN_STMT:
+        case AST_PRINT_STMT:
+        case AST_EXPR_STMT:
+             semanticAnalysis(n->left);
+             semanticAnalysis(n->middle);
+             semanticAnalysis(n->right);
+             break;
+        case AST_WHILE_STMT:
+             semanticAnalysis(n->left);
+             semanticAnalysis(n->middle);
+             semanticAnalysis(n->right);
+             break;
+        case AST_CALL_EXPR:
+             semanticAnalysis(n->left);
+             semanticAnalysis(n->middle);
+             semanticAnalysis(n->right);
+        break;
+        case AST_FUNCTION_DECL:
+
+              enterScope(); 
+
+             semanticAnalysis(n->left);
+             semanticAnalysis(n->middle);
+             semanticAnalysis(n->right);
+
+             exitScope();
+        break;
+        case AST_VARIABLE_DECL:
+            // Check the assignment expression if it exists
+             if (n->right) {
+             int expr_type = semanticAnalysis(n->right);
+             int expected_type = n->left->int_value;
+
+             if (expr_type != expected_type) {
+            fprintf(stderr, "Semantic Error: Type mismatch in declaration of '%s'. Expected %s, got %s\n", 
+                    n->name, typeToString(expected_type), typeToString(expr_type));
+            exit(1);
+        }
+           // hope i dont forget to add this: if (expr_type != n->left->int_value) error!
+           // I didnt.
+                 }
+             break;
+        case AST_ASSIGN_EXPR: {
+               symbol *s = lookUpRetiredSymbol(n->name);
+                if (!s) {
+              fprintf(stderr, "Error: Assignment to undeclared variable '%s'\n", n->name);
+               exit(1);
+                   }
+               int expr_type = semanticAnalysis(n->right);
+               
+               if (s->type != expr_type) {
+                    fprintf(stderr, "Semantic Error: Cannot assign type %d to variable '%s' of type %d\n", 
+                       expr_type, n->name, s->type);
+                    exit(1);
+                 }
+
+                n->type = expr_type;
+             break;
+            }
+        case AST_INTEGER_LITERAL:
+            return n->type = INTEGER; 
+
+        case AST_FLOAT_LITERAL:
+            return n->type = FLOAT;
+
+        case AST_STRING_LITERAL:
+            return n->type = STRING;
+
+        case AST_BOOLEAN_LITERAL:
+            return n->type = BOOLEAN;
+
+        case AST_CHAR_LITERAL:
+            return n->type = CHAR;
+        default:
+            break;
+        
+    }
+
+  int current_type = n->type;
+
+    // this to process the next one
+    if (n->next) {
+        semanticAnalysis(n->next);
+    }
+
+    return current_type; 
+}
+and #include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include "symboltable.h" // wow congrats to me. I didnt forget add it this time and not deal with nonexistent errors for 30 minutes.
+
+symbol *head = NULL;
+int current_scope = 0; // 0 = Global, 1+ = Local
+
+void enterScope() {
+    current_scope++;
+}
+
+void exitScope() {
+    symbol *s = head;
+
+    while (s != NULL && s->scope == current_scope) {
+        s->retired = 1;
+        s = s->next;
+    }
+    current_scope--;
+}
+
+int insertSymbol(char *name, int type) {
+    // Check if it exists IN THE CURRENT SCOPE only. Shadowing is allowed for outer scopes.
+    symbol *s = head;
+
+    printf("DEBUG: Inserting '%s' | Current Scope: %d | Head Scope: %s\n", 
+        name, current_scope, (head ? "Exists" : "NULL"));
+
+    while (s != NULL) {
+        if (s-> scope == current_scope && strcmp(s->name, name) == 0) return 0; // Error: Redeclared in same scope.
+        s = s->next;
+    }
+
+    symbol *new_sym = calloc(1, sizeof(symbol));
+    new_sym->name = strdup(name);
+    new_sym->type = type;
+    new_sym->scope = current_scope;
+    new_sym->next = head;
+    head = new_sym;
+    return 1;
+}
+
+symbol* lookUpSymbol(char *name) {
+    symbol *current = head;
+    while (current != NULL) {
+        if (strcmp(current->name, name) == 0 && !current->retired) return current;
+        current = current->next;
+    }
+    return NULL; // lmao bozos passport failed in ALL the accessible scopes
+}
+
+symbol* lookUpRetiredSymbol(char *name) {
+    symbol *current = head;
+    while (current != NULL) {
+        if (strcmp(current->name, name) == 0) {
+            return current;
+        }
+        current = current->next;
+    }
+    return NULL;
+}
+
+int is_global(char *name) {
+    symbol *s = head;
+    while (s != NULL) {
+        if (strcmp(s->name, name) == 0) {
+            return (s->scope == 0);
+        }
+        s = s->next; 
+    }
+    return 0;
+}
+and #ifndef SYMBOLTABLE_H
+#define SYMBOLTABLE_H
+
+
+typedef struct symbol {
+    char *name;
+    int type;        //AST_TYPE 
+    int scope; // 0 -> global, 1 -> function
+    struct symbol *next;
+    int retired;
+} symbol;
+
+void enterScope();
+void exitScope();
+
+int insertSymbol(char *name, int type); // add: var -> table
+
+symbol* lookUpSymbol(char *name); // validate passport control ahh function.
+symbol* lookUpRetiredSymbol(char *name); //still remember the invalid ones.
+
+#endif and for the output i got: [kutay@kutay B-Minus Comgcc -no-bison -d parser.y
+[kutay@kutay B-Minus Compiler]$ flex lexical.l
+[kutay@kutay B-Minus Compiler]$ gcc parser.tab.c lex.yy.c ast.c symboltable.c semanticAnalysis.c codegen.c registers.c assembler.c -o compiler
+[kutay@kutay B-Minus Compiler]$ ./compiler < test.bm
+DEBUG: Inserting 'x' | Current Scope: 0 | Head Scope: NULL
+DEBUG: Inserting 'main' | Current Scope: 0 | Head Scope: Exists
+DEBUG: Inserting 'a' | Current Scope: 1 | Head Scope: Exists
+--- Front-end Success ---
+Semantic Analysis Complete.
+Optimizing IR...
+Generating Assembly (output.s)...
+
+Compilation Complete.
+[kutay@kutay B-Minus Compiler]$ gcc -no-pie output.s -o my_program
+/usr/bin/ld: /usr/lib/gcc/x86_64-pc-linux-gnu/15.2.1/../../../../lib/crt1.o: in function `_start':
+(.text+0x1b): undefined reference to `main'
+collect2: error: ld returned 1 exit status
+[kutay@kutay B-Minus Compiler]$ bison -d parser.y
+[kutay@kutay B-Minus Compiler]$ flex lexical.l
+[kutay@kutay B-Minus Compiler]$ gcc parser.tab.c lex.yy.c ast.c symboltable.c semanticAnalysis.c codegen.c registers.c assembler.c -o compiler
+parser.y:306:1: error: expected identifier or ‘(’ before ‘<’ token
+  306 | <int main(void) {
+      | ^
+parser.y:339:2: error: expected identifier or ‘(’ before ‘>’ token
+  339 | }>
+      |  ^
+[kutay@kutay B-Minus Compiler]$ bison -d parser.y
+[kutay@kutay B-Minus Compiler]$ flex lexical.l
+[kutay@kutay B-Minus Compiler]$ gcc parser.tab.c lex.yy.c ast.c symboltable.c semanticAnalysis.c codegen.c registers.c assembler.c -o compiler
+[kutay@kutay B-Minus Compiler]$ ./compiler < test.bm
+DEBUG: Inserting 'x' | Current Scope: 0 | Head Scope: NULL
+DEBUG: Inserting 'main' | Current Scope: 0 | Head Scope: Exists
+DEBUG: Inserting 'a' | Current Scope: 1 | Head Scope: Exists
+Parse successful! Starting Semantic Analysis:
+Semantics successful, Tree:
+DEBUG: While Loop Body Node Kind: 9
+
+Optimizing Intermediate Representation...
+Generating Assembly (output.s)...
+
+Cleaning up memory...
+[kutay@kutay B-Minus Compiler]$ gcc -no-pie output.s -o my_program
+/usr/bin/ld: /tmp/ccM6YwY2.o: in function `main':
+(.text+0x2e): undefined reference to `L1'
+/usr/bin/ld: (.text+0x6a): undefined reference to `L0'
+collect2: error: ld returned 1 exit status
+[kutay@kutay B-Minus Compiler]$ 
+
+
+

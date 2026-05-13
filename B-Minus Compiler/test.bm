@@ -1,0 +1,10 @@
+x: integer;
+
+main: function integer () = {
+   x = 0;
+   while(x < 10){
+      x print;
+      ""decrement" print;
+      x = x + 1;
+   }
+}
